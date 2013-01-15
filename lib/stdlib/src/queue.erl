@@ -142,7 +142,7 @@ out({[V],[]}) ->
     {{value,V},{[],[]}};
 out({[Y|In],[]}) ->
     [V|Out] = lists:reverse(In, []),
-    {{value,V},{[Y],Out}};
+    {{value,V},r2f{[Y],Out}};   
 out({In,[V]}) when is_list(In) ->
     {{value,V},r2f(In)};
 out({In,[V|Out]}) when is_list(In) ->
@@ -480,7 +480,8 @@ r2f([_]=R) ->
 r2f([X,Y]) ->
     {[X],[Y]};
 r2f([X,Y|R]) ->
-    {[X,Y],lists:reverse(R, [])}.
+    {FF,RR} = lists:split(length(R) div 2 + 2, [X,Y|R]),
+    {FF,lists:reverse(RR, [])}.
 
 %% Move all but two from F to R, if there are enough
 f2r([]) ->
@@ -490,4 +491,5 @@ f2r([_]=F) ->
 f2r([X,Y]) ->
     {[Y],[X]};
 f2r([X,Y|F]) ->
-    {lists:reverse(F, []),[X,Y]}.
+    {FF,RR} = lists:split(length(F) div 2 + 2, [X,Y|F]),
+    {lists:reverse(RR, []),FF}.
