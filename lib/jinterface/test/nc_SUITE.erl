@@ -1,7 +1,8 @@
+%% -*- coding: utf-8 -*-
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2004-2011. All Rights Reserved.
+%% Copyright Ericsson AB 2004-2012. All Rights Reserved.
 %%
 %% The contents of this file are subject to the Erlang Public License,
 %% Version 1.1, (the "License"); you may not use this file except in
@@ -89,7 +90,7 @@ end_per_suite(Config) ->
 init_per_testcase(Case, Config) ->
     T = case atom_to_list(Case) of
 	    "unicode"++_ -> 240;
-	    _ -> 20
+	    _ -> 30
 	end,
     WatchDog = test_server:timetrap(test_server:seconds(T)),
     [{watchdog, WatchDog}| Config].
@@ -187,10 +188,18 @@ binary_roundtrip(Config) when is_list(Config) ->
 decompress_roundtrip(doc) -> [];
 decompress_roundtrip(suite) -> [];
 decompress_roundtrip(Config) when is_list(Config) ->
+	RandomBin = erlang:term_to_binary(lists:seq(1, 5 * 1024 * 1024)), % roughly 26MB
+	<<RandomBin1k:1024/binary,_/binary>> = RandomBin,
+	<<RandomBin1M:1048576/binary,_/binary>> = RandomBin,
+	<<RandomBin10M:10485760/binary,_/binary>> = RandomBin,
     Terms =
 	[0.0,
 	 math:sqrt(2),
 	 <<1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,31:5>>,
+	 RandomBin1k,
+	 RandomBin1M,
+	 RandomBin10M,
+	 RandomBin,
 	 make_ref()],
     OutTrans =
 	fun (D) ->
@@ -205,10 +214,18 @@ decompress_roundtrip(Config) when is_list(Config) ->
 compress_roundtrip(doc) -> [];
 compress_roundtrip(suite) -> [];
 compress_roundtrip(Config) when is_list(Config) ->
+	RandomBin = erlang:term_to_binary(lists:seq(1, 5 * 1024 * 1024)), % roughly 26MB
+	<<RandomBin1k:1024/binary,_/binary>> = RandomBin,
+	<<RandomBin1M:1048576/binary,_/binary>> = RandomBin,
+	<<RandomBin10M:10485760/binary,_/binary>> = RandomBin,
     Terms =
 	[0.0,
 	 math:sqrt(2),
 	 <<1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,31:5>>,
+	 RandomBin1k,
+	 RandomBin1M,
+	 RandomBin10M,
+	 RandomBin,
 	 make_ref()],
     OutTrans =
 	fun (D) ->
@@ -345,8 +362,8 @@ unicode(doc) -> [];
 unicode(suite) -> [];
 unicode(Config) when is_list(Config) ->
     S1 = "plain ascii",
-    S2 = "iso-latin едц с",
-    S3 = "Codepoints... едц \x{1000}",
+    S2 = "iso-latin ГҐГ¤Г¶ Г±",
+    S3 = "Codepoints... ГҐГ¤Г¶ \x{1000}",
     S4 = [0,1,31,32,63,64,127,128,255],
     S5 = [0,1,127,128,255,256,16#d7ff,
 	  16#e000,16#fffd,16#10000,16#10ffff],

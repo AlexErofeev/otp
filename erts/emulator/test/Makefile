@@ -47,6 +47,7 @@ MODULES= \
 	busy_port_SUITE \
 	call_trace_SUITE \
 	code_SUITE \
+	code_parallel_load_SUITE \
 	crypto_SUITE \
 	ddll_SUITE \
 	decode_packet_SUITE \
@@ -137,10 +138,10 @@ TARGET_FILES = $(MODULES:%=$(EBIN)/%.$(EMULATOR))
 
 EMAKEFILE=Emakefile
 
-TEST_SPEC_FILES =	emulator.spec \
-			emulator.spec.win \
-			emulator.spec.vxworks \
-			emulator.spec.ose
+TEST_SPEC_FILES= emulator.spec \
+		 emulator.spec.win \
+		 emulator_bench.spec
+
 # ----------------------------------------------------
 # Release directory specification
 # ----------------------------------------------------

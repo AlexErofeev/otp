@@ -44,6 +44,7 @@
 #include "erl_thr_progress.h"
 #include "erl_thr_queue.h"
 #include "erl_async.h"
+#include "erl_ptab.h"
 
 #ifdef HIPE
 #include "hipe_mode_switch.h"	/* for hipe_mode_switch_init() */
@@ -54,6 +55,66 @@
 #  include <sys/resource.h>
 #endif
 
+/*
+ * The variables below (prefixed with etp_) are for erts/etc/unix/etp-commands
+ * only. Do not remove even though they aren't used elsewhere in the emulator!
+ */
+#ifdef ERTS_SMP
+const int etp_smp_compiled = 1;
+#else
+const int etp_smp_compiled = 0;
+#endif
+#ifdef USE_THREADS
+const int etp_thread_compiled = 1;
+#else
+const int etp_thread_compiled = 0;
+#endif
+const char etp_erts_version[] = ERLANG_VERSION;
+const char etp_otp_release[] = ERLANG_OTP_RELEASE;
+const char etp_compile_date[] = ERLANG_COMPILE_DATE;
+const char etp_arch[] = ERLANG_ARCHITECTURE;
+#ifdef ERTS_ENABLE_KERNEL_POLL
+const int etp_kernel_poll_support = 1;
+#else
+const int etp_kernel_poll_support = 0;
+#endif
+#if defined(ARCH_64)
+const int etp_arch_bits = 64;
+#elif defined(ARCH_32)
+const int etp_arch_bits = 32;
+#else
+# error "Not 64-bit, nor 32-bit arch"
+#endif
+#if HALFWORD_HEAP
+const int etp_halfword = 1;
+#else
+const int etp_halfword = 0;
+#endif
+#ifdef HIPE
+const int etp_hipe = 1;
+#else
+const int etp_hipe = 0;
+#endif
+#ifdef DEBUG
+const int etp_debug_compiled = 1;
+#else
+const int etp_debug_compiled = 0;
+#endif
+#ifdef ERTS_ENABLE_LOCK_COUNT
+const int etp_lock_count = 1;
+#else
+const int etp_lock_count = 0;
+#endif
+#ifdef ERTS_ENABLE_LOCK_CHECK
+const int etp_lock_check = 1;
+#else
+const int etp_lock_check = 0;
+#endif
+#ifdef WORDS_BIGENDIAN
+const int etp_big_endian = 1;
+#else
+const int etp_big_endian = 0;
+#endif
 /*
  * Note about VxWorks: All variables must be initialized by executable code,
  * not by an initializer. Otherwise a new instance of the emulator will
@@ -66,9 +127,10 @@ extern void ConNormalExit(void);
 extern void ConWaitForExit(void);
 #endif
 
-static void erl_init(int ncpu);
-
-#define ERTS_MIN_COMPAT_REL 7
+static void erl_init(int ncpu,
+		     int proc_tab_sz,
+		     int port_tab_sz,
+		     int port_tab_sz_ignore_files);
 
 static erts_atomic_t exiting;
 
@@ -151,8 +213,6 @@ ErtsModifiedTimings erts_modified_timings[] = {
 
 Export *erts_delay_trap = NULL;
 
-int erts_use_r9_pids_ports;
-
 int ignore_break;
 int replace_intr;
 
@@ -216,12 +276,18 @@ void
 erts_short_init(void)
 {
     int ncpu = early_init(NULL, NULL);
-    erl_init(ncpu);
+    erl_init(ncpu,
+	     ERTS_DEFAULT_MAX_PROCESSES,
+	     ERTS_DEFAULT_MAX_PORTS,
+	     0);
     erts_initialized = 1;
 }
 
 static void
-erl_init(int ncpu)
+erl_init(int ncpu,
+	 int proc_tab_sz,
+	 int port_tab_sz,
+	 int port_tab_sz_ignore_files)
 {
     init_benchmarking();
 
@@ -229,7 +295,7 @@ erl_init(int ncpu)
     erts_init_gc();
     erts_init_time();
     erts_init_sys_common_misc();
-    erts_init_process(ncpu);
+    erts_init_process(ncpu, proc_tab_sz);
     erts_init_scheduling(no_schedulers,
 			 no_schedulers_online);
     erts_init_cpu_topology(); /* Must be after init_scheduling */
@@ -241,6 +307,7 @@ erl_init(int ncpu)
     erts_init_trace();
     erts_init_binary();
     erts_init_bits();
+    erts_code_ix_init();
     erts_init_fun_table();
     init_atom_table();
     init_export_table();
@@ -250,6 +317,7 @@ erl_init(int ncpu)
     erts_bif_info_init();
     erts_ddll_init();
     init_emulator();
+    erts_ptab_init(); /* Must be after init_emulator() */
     erts_bp_init();
     init_db(); /* Must be after init_emulator */
     erts_bif_timer_init();
@@ -257,7 +325,7 @@ erl_init(int ncpu)
     init_dist();
     erl_drv_thr_init();
     erts_init_async();
-    init_io();
+    erts_init_io(port_tab_sz, port_tab_sz_ignore_files);
     init_load();
     erts_init_bif();
     erts_init_bif_chksum();
@@ -289,7 +357,8 @@ erl_first_process_otp(char* modname, void* code, unsigned size, int argc, char**
     Eterm env;
     
     start_mod = am_atom_put(modname, sys_strlen(modname));
-    if (erts_find_function(start_mod, am_start, 2) == NULL) {
+    if (erts_find_function(start_mod, am_start, 2,
+			   erts_active_code_ix()) == NULL) {
 	erl_exit(5, "No function %s:start/2\n", modname);
     }
 
@@ -388,7 +457,7 @@ load_preloaded(void)
 	if ((code = sys_preload_begin(&preload_p[i])) == 0)
 	    erl_exit(1, "Failed to find preloaded code for module %s\n", 
 		     name);
-	res = erts_load_module(NULL, 0, NIL, &module_name, code, length);
+	res = erts_preload_module(NULL, 0, NIL, &module_name, code, length);
 	sys_preload_end(&preload_p[i]);
 	if (res != NIL)
 	    erl_exit(1,"Failed loading preloaded module %s (%T)\n",
@@ -400,6 +469,7 @@ load_preloaded(void)
 /* be helpful (or maybe downright rude:-) */
 void erts_usage(void)
 {
+    int this_rel = this_rel_num();
     erts_fprintf(stderr, "Usage: %s [flags] [ -- [init_args] ]\n", progname(program));
     erts_fprintf(stderr, "The flags are:\n\n");
 
@@ -433,16 +503,20 @@ void erts_usage(void)
     /*    erts_fprintf(stderr, "-i module  set the boot module (default init)\n"); */
 
     erts_fprintf(stderr, "-K boolean  enable or disable kernel poll\n");
-
+    erts_fprintf(stderr, "-n[s|a|d]   Control behavior of signals to ports\n");
+    erts_fprintf(stderr, "            Note that this flag is deprecated!\n");
     erts_fprintf(stderr, "-M<X> <Y>   memory allocator switches,\n");
     erts_fprintf(stderr, "            see the erts_alloc(3) documentation for more info.\n");
 
     erts_fprintf(stderr, "-P number   set maximum number of processes on this node,\n");
     erts_fprintf(stderr, "            valid range is [%d-%d]\n",
-	       ERTS_MIN_PROCESSES, ERTS_MAX_PROCESSES);
+		 ERTS_MIN_PROCESSES, ERTS_MAX_PROCESSES);
+    erts_fprintf(stderr, "-Q number   set maximum number of ports on this node,\n");
+    erts_fprintf(stderr, "            valid range is [%d-%d]\n",
+		 ERTS_MIN_PORTS, ERTS_MAX_PORTS);
     erts_fprintf(stderr, "-R number   set compatibility release number,\n");
     erts_fprintf(stderr, "            valid range [%d-%d]\n",
-	       ERTS_MIN_COMPAT_REL, this_rel_num());
+		 this_rel-2, this_rel);
 
     erts_fprintf(stderr, "-r          force ets memory block to be moved on realloc\n");
     erts_fprintf(stderr, "-rg amount  set reader groups limit\n");
@@ -462,6 +536,7 @@ void erts_usage(void)
     erts_fprintf(stderr, "            valid range is [%d-%d]\n",
 		 ERTS_SCHED_THREAD_MIN_STACK_SIZE,
 		 ERTS_SCHED_THREAD_MAX_STACK_SIZE);
+    erts_fprintf(stderr, "-spp Bool   set port parallelism scheduling hint\n");
     erts_fprintf(stderr, "-S n1:n2    set number of schedulers (n1), and number of\n");
     erts_fprintf(stderr, "            schedulers online (n2), valid range for both\n");
     erts_fprintf(stderr, "            numbers are [1-%d]\n",
@@ -582,8 +657,6 @@ early_init(int *argc, char **argv) /*
     erts_modified_timing_level = -1;
 
     erts_compat_rel = this_rel_num();
-
-    erts_use_r9_pids_ports = 0;
 
     erts_sys_pre_init();
     erts_atomic_init_nob(&exiting, 0);
@@ -839,11 +912,13 @@ erl_start(int argc, char **argv)
 {
     int i = 1;
     char* arg=NULL;
-    char* Parg = NULL;
     int have_break_handler = 1;
     char envbuf[21]; /* enough for any 64-bit integer */
     size_t envbufsz;
     int ncpu = early_init(&argc, argv);
+    int proc_tab_sz = ERTS_DEFAULT_MAX_PROCESSES;
+    int port_tab_sz = ERTS_DEFAULT_MAX_PORTS;
+    int port_tab_sz_ignore_files = 0;
 
     envbufsz = sizeof(envbuf);
     if (erts_sys_getenv_raw(ERL_MAX_ETS_TABLES_ENV, envbuf, &envbufsz) == 0)
@@ -914,6 +989,7 @@ erl_start(int argc, char **argv)
 		    break;
 		case 'a':
 		    erts_set_user_requested_filename_encoding(ERL_FILENAME_UNKNOWN);
+		    break;
 		default:
 		    erts_fprintf(stderr, "bad filename encoding %s, can be (l,u or a)\n", arg);
 		    erts_usage();
@@ -1094,12 +1170,53 @@ erl_start(int argc, char **argv)
 		       arg);
 	    break;
 
-	case 'P':
-	    /* set maximum number of processes */
-	    Parg = get_arg(argv[i]+2, argv[i+1], &i);
-	    erts_max_processes = atoi(Parg);
-	    /* Check of result is delayed until later. This is because +R
-	       may be given after +P. */
+	case 'n':
+	    arg = get_arg(argv[i]+2, argv[i+1], &i);
+	    switch (arg[0]) {
+	    case 's': /* synchronous */
+		erts_port_synchronous_ops = 1;
+		erts_port_schedule_all_ops = 0;
+		break;
+	    case 'a': /* asynchronous */
+		erts_port_synchronous_ops = 0;
+		erts_port_schedule_all_ops = 1;
+		break;
+	    case 'd': /* Default - schedule on conflict (asynchronous) */
+		erts_port_synchronous_ops = 0;
+		erts_port_schedule_all_ops = 0;
+		break;
+	    default:
+	    bad_n_option:
+		erts_fprintf(stderr, "bad -n option %s\n", arg);
+		erts_usage();
+	    }
+	    if (arg[1] != '\0')
+		goto bad_n_option;
+	    break;
+
+	case 'P': /* set maximum number of processes */
+	    arg = get_arg(argv[i]+2, argv[i+1], &i);
+	    errno = 0;
+	    proc_tab_sz = strtol(arg, NULL, 10);
+	    if (errno != 0
+		|| proc_tab_sz < ERTS_MIN_PROCESSES
+		|| ERTS_MAX_PROCESSES < proc_tab_sz) {
+		erts_fprintf(stderr, "bad number of processes %s\n", arg);
+		erts_usage();
+	    }
+	    break;
+
+	case 'Q': /* set maximum number of ports */
+	    arg = get_arg(argv[i]+2, argv[i+1], &i);
+	    errno = 0;
+	    port_tab_sz = strtol(arg, NULL, 10);
+	    if (errno != 0
+		|| port_tab_sz < ERTS_MIN_PROCESSES
+		|| ERTS_MAX_PROCESSES < port_tab_sz) {
+		erts_fprintf(stderr, "bad number of ports %s\n", arg);
+		erts_usage();
+	    }
+	    port_tab_sz_ignore_files = 1;
 	    break;
 
 	case 'S' : /* Was handled in early_init() just read past it */
@@ -1201,6 +1318,19 @@ erl_start(int argc, char **argv)
 		    erts_usage();
 		}
 	    }
+	    else if (has_prefix("pp", sub_param)) {
+		arg = get_arg(sub_param+2, argv[i+1], &i);
+		if (sys_strcmp(arg, "true") == 0)
+		    erts_port_parallelism = 1;
+		else if (sys_strcmp(arg, "false") == 0)
+		    erts_port_parallelism = 0;
+		else {
+		    erts_fprintf(stderr,
+				 "bad port parallelism scheduling hint %s\n",
+				 arg);
+		    erts_usage();
+		}
+	    }
 	    else if (sys_strcmp("nsp", sub_param) == 0)
 		erts_use_sender_punish = 0;
 	    else if (sys_strcmp("wt", sub_param) == 0) {
@@ -1282,22 +1412,19 @@ erl_start(int argc, char **argv)
 
 	case 'R': {
 	    /* set compatibility release */
+	    int this_rel;
 
 	    arg = get_arg(argv[i]+2, argv[i+1], &i);
 	    erts_compat_rel = atoi(arg);
 
-	    if (erts_compat_rel < ERTS_MIN_COMPAT_REL
-		|| erts_compat_rel > this_rel_num()) {
+	    this_rel = this_rel_num();
+	    if (erts_compat_rel < this_rel - 2 || this_rel < erts_compat_rel) {
 		erts_fprintf(stderr, "bad compatibility release number %s\n", arg);
 		erts_usage();
 	    }
 
-	    ASSERT(ERTS_MIN_COMPAT_REL >= 7);
 	    switch (erts_compat_rel) {
-	    case 7:
-	    case 8:
-	    case 9:
-		erts_use_r9_pids_ports = 1;
+		/* Currently no compat features... */
 	    default:
 		break;
 	    }
@@ -1339,8 +1466,6 @@ erl_start(int argc, char **argv)
 	    }
 	    break;
 	}
-	case 'n':   /* XXX obsolete */
-	    break;
 	case 'c':
 	    if (argv[i][2] == 0) { /* -c: documented option */
 		erts_disable_tolerant_timeofday = 1;
@@ -1395,15 +1520,6 @@ erl_start(int argc, char **argv)
 	i++;
     }
 
-    /* Delayed check of +P flag */
-    if (erts_max_processes < ERTS_MIN_PROCESSES
-	|| erts_max_processes > ERTS_MAX_PROCESSES
-	|| (erts_use_r9_pids_ports
-	    && erts_max_processes > ERTS_MAX_R9_PROCESSES)) {
-	erts_fprintf(stderr, "bad number of processes %s\n", Parg);
-	erts_usage();
-    }
-
    /* Restart will not reinstall the break handler */
 #ifdef __WIN32__
     if (ignore_break)
@@ -1424,9 +1540,14 @@ erl_start(int argc, char **argv)
     boot_argc = argc - i;  /* Number of arguments to init */
     boot_argv = &argv[i];
 
-    erl_init(ncpu);
+    erl_init(ncpu,
+	     proc_tab_sz,
+	     port_tab_sz,
+	     port_tab_sz_ignore_files);
 
     load_preloaded();
+    erts_end_staging_code_ix();
+    erts_commit_staging_code_ix();
 
     erts_initialized = 1;
 

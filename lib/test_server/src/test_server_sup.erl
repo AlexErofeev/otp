@@ -28,7 +28,7 @@
 	 get_username/0, get_os_family/0, 
 	 hostatom/0, hostatom/1, hoststr/0, hoststr/1,
 	 framework_call/2,framework_call/3,framework_call/4,
-	 format_loc/1, package_str/1, package_atom/1,
+	 format_loc/1,
 	 call_trace/1]).
 -include("test_server_internal.hrl").
 -define(crash_dump_tar,"crash_dumps.tar.gz").
@@ -64,13 +64,7 @@ timetrap(Timeout0, ReportTVal, Scale, Pid) ->
 				      true -> ReportTVal end,
 		    MFLs = test_server:get_loc(Pid),
 		    Mon = erlang:monitor(process, Pid),
-		    Trap = 
-			case get(test_server_init_or_end_conf) of
-			    undefined ->
-				{timetrap_timeout,TimeToReport,MFLs};
-			    InitOrEnd ->
-				{timetrap_timeout,TimeToReport,MFLs,InitOrEnd}
-			end,
+		    Trap = {timetrap_timeout,TimeToReport,MFLs},
 		    exit(Pid, Trap),
 		    receive
 			{'DOWN', Mon, process, Pid, _} ->
@@ -473,10 +467,8 @@ getenv_any([]) -> "".
 %%
 %% Returns the OS family
 get_os_family() ->
-    case os:type() of
-	{OsFamily,_OsName} -> OsFamily;
-	OsFamily -> OsFamily
-    end.
+    {OsFamily,_OsName} = os:type(),
+    OsFamily.
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -520,8 +512,18 @@ framework_call(Callback,Func,Args,DefaultReturn) ->
     end,
     case erlang:function_exported(Mod,Func,length(Args)) of
 	true ->
-	    put(test_server_loc, {Mod,Func,framework}),
 	    EH = fun(Reason) -> exit({fw_error,{Mod,Func,Reason}}) end,
+	    SetTcState = case Func of
+			     end_tc -> true;
+			     init_tc -> true;
+			     _ -> false
+			 end,
+	    case SetTcState of
+		true ->
+		    test_server:set_tc_state({framework,Mod,Func});
+		false ->
+		    ok
+	    end,
 	    try apply(Mod,Func,Args) of
 		Result ->
 		    Result
@@ -551,19 +553,7 @@ format_loc([{Mod,Func,Line}|Rest]) ->
 format_loc([{Mod,LineOrFunc}]) ->
     format_loc({Mod,LineOrFunc});
 format_loc({Mod,Func}) when is_atom(Func) -> 
-    io_lib:format("{~s,~w}",[package_str(Mod),Func]);
-format_loc({Mod,Line}) when is_integer(Line) -> 
-    %% ?line macro is used
-    ModStr = package_str(Mod),
-    case {lists:member(no_src, get(test_server_logopts)),
-	  lists:reverse(ModStr)} of
-	{false,[$E,$T,$I,$U,$S,$_|_]}  ->
-	    io_lib:format("{~s,<a href=\"~s~s#~w\">~w</a>}",
-			  [ModStr,downcase(ModStr),?src_listing_ext,
-			   round_to_10(Line),Line]);
-	_ ->
-	    io_lib:format("{~s,~w}",[ModStr,Line])
-    end;
+    io_lib:format("{~w,~w}",[Mod,Func]);
 format_loc(Loc) ->
     io_lib:format("~p",[Loc]).    
 
@@ -572,21 +562,16 @@ format_loc1([{Mod,Func,Line}]) ->
 format_loc1([{Mod,Func,Line}|Rest]) ->
     ["              ",format_loc1({Mod,Func,Line}),",\n"|format_loc1(Rest)];
 format_loc1({Mod,Func,Line}) ->
-    ModStr = package_str(Mod),
+    ModStr = atom_to_list(Mod),
     case {lists:member(no_src, get(test_server_logopts)),
 	  lists:reverse(ModStr)} of
 	{false,[$E,$T,$I,$U,$S,$_|_]}  ->
-	    io_lib:format("{~s,~w,<a href=\"~s~s#~w\">~w</a>}",
-			  [ModStr,Func,downcase(ModStr),?src_listing_ext,
-			   round_to_10(Line),Line]);
+	    io_lib:format("{~w,~w,<a href=\"~s~s#~w\">~w</a>}",
+			  [Mod,Func,downcase(ModStr),?src_listing_ext,
+			   Line,Line]);
 	_ ->
-	    io_lib:format("{~s,~w,~w}",[ModStr,Func,Line])
+	    io_lib:format("{~w,~w,~w}",[Mod,Func,Line])
     end.
-
-round_to_10(N) when (N rem 10) == 0 ->
-    N;
-round_to_10(N) ->
-    trunc(N/10)*10.
 
 downcase(S) -> downcase(S, []).
 downcase([Uc|Rest], Result) when $A =< Uc, Uc =< $Z ->
@@ -595,22 +580,6 @@ downcase([C|Rest], Result) ->
     downcase(Rest, [C|Result]);
 downcase([], Result) ->
     lists:reverse(Result).
-
-package_str(Mod) when is_atom(Mod) ->
-    atom_to_list(Mod);
-package_str(Mod) when is_list(Mod), is_atom(hd(Mod)) ->
-    %% convert [s1,s2] -> "s1.s2"
-    [_|M] = lists:flatten(["."++atom_to_list(S) || S <- Mod]),
-    M;
-package_str(Mod) when is_list(Mod) ->
-    Mod.
-
-package_atom(Mod) when is_atom(Mod) ->
-    Mod;
-package_atom(Mod) when is_list(Mod), is_atom(hd(Mod)) ->
-    list_to_atom(package_str(Mod));
-package_atom(Mod) when is_list(Mod) ->
-    list_to_atom(Mod).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% call_trace(TraceSpecFile) -> ok

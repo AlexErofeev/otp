@@ -1062,6 +1062,7 @@ enc_opt(multicast_ttl)   -> ?UDP_OPT_MULTICAST_TTL;
 enc_opt(multicast_loop)  -> ?UDP_OPT_MULTICAST_LOOP;
 enc_opt(add_membership)  -> ?UDP_OPT_ADD_MEMBERSHIP;
 enc_opt(drop_membership) -> ?UDP_OPT_DROP_MEMBERSHIP;
+enc_opt(ipv6_v6only)     -> ?INET_OPT_IPV6_V6ONLY;
 enc_opt(buffer)          -> ?INET_LOPT_BUFFER;
 enc_opt(header)          -> ?INET_LOPT_HEADER;
 enc_opt(active)          -> ?INET_LOPT_ACTIVE;
@@ -1071,7 +1072,8 @@ enc_opt(deliver)         -> ?INET_LOPT_DELIVER;
 enc_opt(exit_on_close)   -> ?INET_LOPT_EXITONCLOSE;
 enc_opt(high_watermark)  -> ?INET_LOPT_TCP_HIWTRMRK;
 enc_opt(low_watermark)   -> ?INET_LOPT_TCP_LOWTRMRK;
-enc_opt(bit8)            -> ?INET_LOPT_BIT8;
+enc_opt(high_msgq_watermark)  -> ?INET_LOPT_TCP_MSGQ_HIWTRMRK;
+enc_opt(low_msgq_watermark)   -> ?INET_LOPT_TCP_MSGQ_LOWTRMRK;
 enc_opt(send_timeout)    -> ?INET_LOPT_TCP_SEND_TIMEOUT;
 enc_opt(send_timeout_close) -> ?INET_LOPT_TCP_SEND_TIMEOUT_CLOSE;
 enc_opt(delay_send)      -> ?INET_LOPT_TCP_DELAY_SEND;
@@ -1116,6 +1118,7 @@ dec_opt(?UDP_OPT_MULTICAST_TTL)   -> multicast_ttl;
 dec_opt(?UDP_OPT_MULTICAST_LOOP)  -> multicast_loop;
 dec_opt(?UDP_OPT_ADD_MEMBERSHIP)  -> add_membership;
 dec_opt(?UDP_OPT_DROP_MEMBERSHIP) -> drop_membership;
+dec_opt(?INET_OPT_IPV6_V6ONLY)    -> ipv6_v6only;
 dec_opt(?INET_LOPT_BUFFER)        -> buffer;
 dec_opt(?INET_LOPT_HEADER)        -> header;
 dec_opt(?INET_LOPT_ACTIVE)        -> active;
@@ -1125,7 +1128,8 @@ dec_opt(?INET_LOPT_DELIVER)       -> deliver;
 dec_opt(?INET_LOPT_EXITONCLOSE)   -> exit_on_close;
 dec_opt(?INET_LOPT_TCP_HIWTRMRK)  -> high_watermark;
 dec_opt(?INET_LOPT_TCP_LOWTRMRK)  -> low_watermark;
-dec_opt(?INET_LOPT_BIT8)          -> bit8;
+dec_opt(?INET_LOPT_TCP_MSGQ_HIWTRMRK)  -> high_msgq_watermark;
+dec_opt(?INET_LOPT_TCP_MSGQ_LOWTRMRK)  -> low_msgq_watermark;
 dec_opt(?INET_LOPT_TCP_SEND_TIMEOUT) -> send_timeout;
 dec_opt(?INET_LOPT_TCP_SEND_TIMEOUT_CLOSE) -> send_timeout_close;
 dec_opt(?INET_LOPT_TCP_DELAY_SEND)   -> delay_send;
@@ -1180,6 +1184,7 @@ type_opt_1(recbuf)          -> int;
 type_opt_1(priority)        -> int;
 type_opt_1(tos)             -> int;
 type_opt_1(nodelay)         -> bool;
+type_opt_1(ipv6_v6only)     -> bool;
 %% multicast
 type_opt_1(multicast_ttl)   -> int;
 type_opt_1(multicast_loop)  -> bool;
@@ -1220,11 +1225,8 @@ type_opt_1(deliver) ->
 type_opt_1(exit_on_close)   -> bool;
 type_opt_1(low_watermark)   -> int;
 type_opt_1(high_watermark)  -> int;
-type_opt_1(bit8) ->
-    {enum,[{clear, ?INET_BIT8_CLEAR},
-	   {set,   ?INET_BIT8_SET},
-	   {on,    ?INET_BIT8_ON},
-	   {off,   ?INET_BIT8_OFF}]};
+type_opt_1(low_msgq_watermark)   -> int;
+type_opt_1(high_msgq_watermark)  -> int;
 type_opt_1(send_timeout)    -> time;
 type_opt_1(send_timeout_close) -> bool;
 type_opt_1(delay_send)      -> bool;

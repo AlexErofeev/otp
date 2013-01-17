@@ -25,6 +25,7 @@
 	 replace_path/1, load_file/1, load_abs/1, ensure_loaded/1,
 	 delete/1, purge/1, soft_purge/1, is_loaded/1, all_loaded/1,
 	 load_binary/1, dir_req/1, object_code/1, set_path_file/1,
+	 upgrade/1,
 	 sticky_dir/1, pa_pz_option/1, add_del_path/1,
 	 dir_disappeared/1, ext_mod_dep/1, clash/1,
 	 load_cached/1, start_node_with_cache/1, add_and_rehash/1,
@@ -43,6 +44,8 @@
 	 handle_event/2, handle_call/2, handle_info/2,
 	 terminate/2]).
 
+-export([compile_load/4]).
+
 suite() -> [{ct_hooks,[ts_install_cth]}].
 
 all() -> 
@@ -50,6 +53,7 @@ all() ->
      replace_path, load_file, load_abs, ensure_loaded,
      delete, purge, soft_purge, is_loaded, all_loaded,
      load_binary, dir_req, object_code, set_path_file,
+     upgrade,
      pa_pz_option, add_del_path, dir_disappeared,
      ext_mod_dep, clash, load_cached, start_node_with_cache,
      add_and_rehash, where_is_file_no_cache,
@@ -450,6 +454,46 @@ load_binary(Config) when is_list(Config) ->
     code:delete(code_b_test),
     ok.
 
+upgrade(Config) ->    
+    DataDir = ?config(data_dir, Config),
+
+    %%T = [beam, hipe],
+    T = [beam],
+
+    [upgrade_do(DataDir, Client, U1, U2, O1, O2)
+     || Client<-T, U1<-T, U2<-T, O1<-T, O2<-T],
+    
+    ok.
+
+upgrade_do(DataDir, Client, U1, U2, O1, O2) ->
+    compile_load(upgrade_client, DataDir, undefined, Client),        
+    upgrade_client:run(DataDir, U1, U2, O1, O2),
+    ok.
+
+compile_load(Mod, Dir, Ver, CodeType) ->
+    Version = case Ver of
+		  undefined ->
+		      io:format("Compiling '~p' as ~p\n", [Mod, CodeType]),
+		      [];
+		  _ ->
+		      io:format("Compiling version ~p of '~p' as ~p\n",
+				[Ver, Mod, CodeType]),
+		      [{d,list_to_atom("VERSION_" ++ integer_to_list(Ver))}]
+	      end,
+    Target = case CodeType of
+		 beam -> [];
+		 hipe -> [native]
+	     end,
+    CompOpts = [binary, report] ++ Target ++ Version,
+
+    Src = filename:join(Dir, atom_to_list(Mod) ++ ".erl"),
+    %io:format("compile:file(~p,~p)\n", [Src, CompOpts]),
+    {ok,Mod,Code} = compile:file(Src, CompOpts),
+    ObjFile = filename:basename(Src,".erl") ++ ".beam",
+    {module,Mod} = code:load_binary(Mod, ObjFile, Code),
+    %IsNative = code:is_module_native(Mod),
+    ok.
+
 dir_req(suite) -> [];
 dir_req(doc) -> [];
 dir_req(Config) when is_list(Config) ->
@@ -535,30 +579,25 @@ sticky_compiler(File) ->
 pa_pz_option(suite) -> [];
 pa_pz_option(doc) -> ["Test that the -pa and -pz options work as expected"];
 pa_pz_option(Config) when is_list(Config) ->
-    case os:type() of
-	vxworks ->
-	    {comment, "Slave nodes not supported on VxWorks"};
-	_ ->
-	    DDir = ?config(data_dir,Config),
-	    PaDir = filename:join(DDir,"pa"),
-	    PzDir = filename:join(DDir,"pz"),
-	    ?line {ok, Node}=?t:start_node(pa_pz1, slave,
-					   [{args,
-					     "-pa " ++ PaDir
-					     ++ " -pz " ++ PzDir}]),
-	    ?line Ret=rpc:call(Node, code, get_path, []),
-	    ?line [PaDir|Paths] = Ret,
-	    ?line [PzDir|_] = lists:reverse(Paths),
-	    ?t:stop_node(Node),
-	    ?line {ok, Node2}=?t:start_node(pa_pz2, slave,
-					    [{args,
-					      "-mode embedded " ++ "-pa "
-					      ++ PaDir ++ " -pz " ++ PzDir}]),
-	    ?line Ret2=rpc:call(Node2, code, get_path, []),
-	    ?line [PaDir|Paths2] = Ret2,
-	    ?line [PzDir|_] = lists:reverse(Paths2),
-	    ?t:stop_node(Node2)
-    end.
+    DDir = ?config(data_dir,Config),
+    PaDir = filename:join(DDir,"pa"),
+    PzDir = filename:join(DDir,"pz"),
+    {ok, Node}=?t:start_node(pa_pz1, slave,
+	[{args,
+		"-pa " ++ PaDir
+		++ " -pz " ++ PzDir}]),
+    Ret=rpc:call(Node, code, get_path, []),
+    [PaDir|Paths] = Ret,
+    [PzDir|_] = lists:reverse(Paths),
+    ?t:stop_node(Node),
+    {ok, Node2}=?t:start_node(pa_pz2, slave,
+	[{args,
+		"-mode embedded " ++ "-pa "
+		++ PaDir ++ " -pz " ++ PzDir}]),
+    Ret2=rpc:call(Node2, code, get_path, []),
+    [PaDir|Paths2] = Ret2,
+    [PzDir|_] = lists:reverse(Paths2),
+    ?t:stop_node(Node2).
 
 add_del_path(suite) ->
     [];
@@ -645,8 +684,8 @@ ext_mod_dep(Config) when is_list(Config) ->
     xref:set_default(s, [{verbose,false},{warnings,false},
 			 {builtins,true},{recurse,true}]),
     xref:set_library_path(s, code:get_path()),
-    xref:add_directory(s, filename:dirname(code:which(kernel))),
-    xref:add_directory(s, filename:dirname(code:which(lists))),
+    xref:add_directory(s, filename:join(code:lib_dir(kernel),"ebin")),
+    xref:add_directory(s, filename:join(code:lib_dir(stdlib),"ebin")),
     case catch ext_mod_dep2() of
 	{'EXIT', Reason} -> 
 	    xref:stop(s),

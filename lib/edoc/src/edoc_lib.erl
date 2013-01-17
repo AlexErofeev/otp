@@ -1,3 +1,4 @@
+%% -*- coding: utf-8 -*-
 %% =====================================================================
 %% This library is free software; you can redistribute it and/or modify
 %% it under the terms of the GNU Lesser General Public License as
@@ -30,10 +31,10 @@
 	 parse_contact/2, escape_uri/1, join_uri/2, is_relative_uri/1,
 	 is_name/1, to_label/1, find_doc_dirs/0, find_sources/2,
 	 find_sources/3, find_file/3, try_subdir/2, unique/1,
-	 write_file/3, write_file/4, write_info_file/4,
+	 write_file/3, write_file/4, write_file/5, write_info_file/4,
 	 read_info_file/1, get_doc_env/1, get_doc_env/4, copy_file/2,
 	 uri_get/1, run_doclet/2, run_layout/2,
-	 simplify_path/1, timestr/1, datestr/1]).
+	 simplify_path/1, timestr/1, datestr/1, read_encoding/2]).
 
 -import(edoc_report, [report/2, warning/2]).
 
@@ -55,6 +56,13 @@ datestr({Y,M,D}) ->
     Ms = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep",
 	  "Oct", "Nov", "Dec"],
     lists:flatten(io_lib:fwrite("~s ~w ~w",[lists:nth(M, Ms),D,Y])).
+
+%% @private
+read_encoding(File, Options) ->
+    case epp:read_encoding(File, Options) of
+        none -> epp:default_encoding();
+        Encoding -> Encoding
+    end.
 
 %% @private
 count(X, Xs) ->
@@ -228,13 +236,13 @@ end_of_sentence_1(_, false, _) ->
 %% 173 - 176	{ - ~		punctuation
 %% 177		DEL		control
 %% 200 - 237			control
-%% 240 - 277	NBSP - ¿	punctuation
-%% 300 - 326	À - Ö		uppercase
-%% 327		×		punctuation
-%% 330 - 336	Ø - Þ		uppercase
-%% 337 - 366	ß - ö		lowercase
-%% 367		÷		punctuation
-%% 370 - 377	ø - ÿ		lowercase
+%% 240 - 277	NBSP - Â¿	punctuation
+%% 300 - 326	Ã€ - Ã–		uppercase
+%% 327		Ã—		punctuation
+%% 330 - 336	Ã˜ - Ãž		uppercase
+%% 337 - 366	ÃŸ - Ã¶		lowercase
+%% 367		Ã·		punctuation
+%% 370 - 377	Ã¸ - Ã¿		lowercase
 
 %% Names must begin with a lowercase letter and contain only
 %% alphanumerics and underscores.
@@ -261,6 +269,10 @@ is_name_1(_) -> false.
 
 to_atom(A) when is_atom(A) -> A;
 to_atom(S) when is_list(S) -> list_to_atom(S).
+
+to_list(A) when is_atom(A) -> atom_to_list(A);
+to_list(S) when is_list(S) -> S.
+
     
 %% @private
 unique([X | Xs]) -> [X | unique(Xs, X)];
@@ -677,7 +689,6 @@ try_subdir(Dir, Subdir) ->
 write_file(Text, Dir, Name) ->
     write_file(Text, Dir, Name, '').
 
-
 %% @spec (Text::deep_string(), Dir::edoc:filename(),
 %%        Name::edoc:filename(), Package::atom()|string()) -> ok
 %% @doc Like {@link write_file/3}, but adds path components to the target
@@ -685,10 +696,12 @@ write_file(Text, Dir, Name) ->
 %% @private
 
 write_file(Text, Dir, Name, Package) ->
-    Dir1 = filename:join([Dir | packages:split(Package)]),
-    File = filename:join(Dir1, Name),
+    write_file(Text, Dir, Name, Package, [{encoding,latin1}]).
+
+write_file(Text, Dir, Name, Package, Options) ->
+    File = filename:join([Dir, to_list(Package), Name]),
     ok = filelib:ensure_dir(File),
-    case file:open(File, [write]) of
+    case file:open(File, [write] ++ Options) of
 	{ok, FD} ->
 	    io:put_chars(FD, Text),
 	    ok = file:close(FD);
@@ -705,8 +718,9 @@ write_info_file(App, Packages, Modules, Dir) ->
     Ts1 = if App =:= ?NO_APP -> Ts;
 	     true -> [{application, App} | Ts]
 	  end,
-    S = [io_lib:fwrite("~p.\n", [T]) || T <- Ts1],
-    write_file(S, Dir, ?INFO_FILE).
+    S0 = [io_lib:fwrite("~p.\n", [T]) || T <- Ts1],
+    S = ["%% encoding: UTF-8\n" | S0],
+    write_file(S, Dir, ?INFO_FILE, '', [{encoding,unicode}]).
 
 %% @spec (Name::edoc:filename()) -> {ok, string()} | {error, Reason}
 %%
@@ -714,7 +728,14 @@ write_info_file(App, Packages, Modules, Dir) ->
 
 read_file(File) ->
     case file:read_file(File) of
-	{ok, Bin} -> {ok, binary_to_list(Bin)};
+	{ok, Bin} ->
+            Enc = edoc_lib:read_encoding(File, []),
+            case catch unicode:characters_to_list(Bin, Enc) of
+                String when is_list(String) ->
+                    {ok, String};
+                _ ->
+                    {error, invalid_unicode}
+            end;
 	{error, Reason} -> {error, Reason}
     end.
 
@@ -818,7 +839,7 @@ find_sources(Path, Pkg, Rec, Ext, Opts) ->
     lists:flatten(find_sources_1(Path, to_atom(Pkg), Rec, Ext, Skip)).
 
 find_sources_1([P | Ps], Pkg, Rec, Ext, Skip) ->
-    Dir = filename:join(P, filename:join(packages:split(Pkg))),
+    Dir = filename:join(P, atom_to_list(Pkg)),
     Fs1 = find_sources_1(Ps, Pkg, Rec, Ext, Skip),
     case filelib:is_dir(Dir) of
 	true ->
@@ -844,9 +865,9 @@ find_sources_2(Dir, Pkg, Rec, Ext, Skip) ->
 	    []
     end.
 
-find_sources_3(Es, Dir, Pkg, Rec, Ext, Skip) ->
+find_sources_3(Es, Dir, '', Rec, Ext, Skip) ->
     [find_sources_2(filename:join(Dir, E),
-		    to_atom(packages:concat(Pkg, E)), Rec, Ext, Skip)
+		    to_atom(E), Rec, Ext, Skip)
      || E <- Es, is_package_dir(E, Dir)].
 
 is_source_file(Name, Ext) ->
@@ -858,16 +879,16 @@ is_package_dir(Name, Dir) ->
 	andalso filelib:is_dir(filename:join(Dir, Name)).
 
 %% @private
-find_file([P | Ps], Pkg, Name) ->
-    Dir = filename:join(P, filename:join(packages:split(Pkg))),
-    File = filename:join(Dir, Name),
+find_file([P | Ps], []=Pkg, Name) ->
+    Pkg = [],
+    File = filename:join(P, Name),
     case filelib:is_file(File) of
 	true ->
 	    File;    
 	false ->
 	    find_file(Ps, Pkg, Name)
     end;    
-find_file([], _Pkg, _Name) ->
+find_file([], [], _Name) ->
     "".
 
 %% @private

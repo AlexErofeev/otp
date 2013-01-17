@@ -2969,15 +2969,6 @@ lookup1(Config) when is_list(Config) ->
                 [3] = lookup_keys(Q)
         end, [{1,a},{3,3}])">>,
 
-      {cres,
-       <<"A = 3,
-          etsc(fun(E) ->
-                Q = qlc:q([X || X <- ets:table(E), A =:= {erlang,element}(1, X)]),
-                [{3,3}] = qlc:e(Q),
-                [3] = lookup_keys(Q)
-        end, [{1,a},{3,3}])">>,
-       {warnings,[{3,erl_lint,deprecated_tuple_fun}]}},
-
        <<"etsc(fun(E) ->
                 A = 3,
                 Q = qlc:q([X || X <- ets:table(E), 
@@ -3442,14 +3433,6 @@ lookup2(Config) when is_list(Config) ->
                  [r] = lookup_keys(Q)
          end, [{keypos,1}], [#r{}])">>,
        {cres,
-       <<"etsc(fun(E) ->
-                Q = qlc:q([element(1, X) || X <- ets:table(E), 
-                                            {erlang,is_record}(X, r, 2)]),
-                 [r] = qlc:e(Q),
-                 [r] = lookup_keys(Q)
-         end, [{keypos,1}], [#r{}])">>,
-        {warnings,[{4,erl_lint,deprecated_tuple_fun}]}},
-       {cres,
         <<"etsc(fun(E) ->
                 Q = qlc:q([element(1, X) || X <- ets:table(E), 
                                             record(X, r)]),
@@ -3468,15 +3451,7 @@ lookup2(Config) when is_list(Config) ->
                                             is_record(X, r)]),
                  [r] = qlc:e(Q),
                  [r] = lookup_keys(Q)
-         end, [{keypos,1}], [#r{}])">>,
-       {cres,
-       <<"etsc(fun(E) ->
-                Q = qlc:q([element(1, X) || X <- ets:table(E), 
-                                            {erlang,is_record}(X, r)]),
-                 [r] = qlc:e(Q),
-                 [r] = lookup_keys(Q)
-         end, [{keypos,1}], [#r{}])">>,
-        {warnings,[{4,erl_lint,deprecated_tuple_fun}]}}
+         end, [{keypos,1}], [#r{}])">>
 
        ],
     ?line run(Config, <<"-record(r, {a}).\n">>, TsR),
@@ -6086,21 +6061,6 @@ otp_6673(Config) when is_list(Config) ->
 
     ],
     ?line run(Config, Ts_RT),
-
-    %% Ulf Wiger provided a patch that makes QLC work with packages:
-    Dir = filename:join(?privdir, "p"),
-    ?line ok = filelib:ensure_dir(filename:join(Dir, ".")),
-    File = filename:join(Dir, "p.erl"),
-    ?line ok = file:write_file(File, 
-        <<"-module(p.p).\n"
-          "-export([q/0]).\n"
-          "-include_lib(\"stdlib/include/qlc.hrl\").\n"
-          "q() ->\n"
-          "    .qlc:q([X || X <- [1,2]]).">>),
-    ?line {ok, 'p.p'} = compile:file(File, [{outdir,Dir}]),
-    ?line code:purge('p.p'),
-    ?line {module, 'p.p'} = code:load_abs(filename:rootname(File), 'p.p'),
-    ?line [1,2] = qlc:e(p.p:q()),
 
     ok.
 

@@ -125,7 +125,7 @@ do {						\
 #define ERTS_BIF_PREP_TRAP0(Ret, Trap, Proc)	\
 do {						\
     (Proc)->arity = 0;				\
-    (Proc)->i = (BeamInstr*) ((Trap)->address);	\
+    (Proc)->i = (BeamInstr*) ((Trap)->addressv[erts_active_code_ix()]);	\
     (Proc)->freason = TRAP;			\
     (Ret) = THE_NON_VALUE;			\
 } while (0)
@@ -135,7 +135,7 @@ do {								\
     Eterm* reg = ERTS_PROC_GET_SCHDATA((Proc))->x_reg_array;	\
     (Proc)->arity = 1;						\
     reg[0] = (Eterm) (A0);					\
-    (Proc)->i = (BeamInstr*) ((Trap)->address);			\
+    (Proc)->i = (BeamInstr*) ((Trap)->addressv[erts_active_code_ix()]); \
     (Proc)->freason = TRAP;					\
     (Ret) = THE_NON_VALUE;					\
 } while (0)
@@ -146,7 +146,7 @@ do {								\
     (Proc)->arity = 2;						\
     reg[0] = (Eterm) (A0);					\
     reg[1] = (Eterm) (A1);					\
-    (Proc)->i = (BeamInstr*) ((Trap)->address);			\
+    (Proc)->i = (BeamInstr*) ((Trap)->addressv[erts_active_code_ix()]); \
     (Proc)->freason = TRAP;					\
     (Ret) = THE_NON_VALUE;					\
 } while (0)
@@ -158,7 +158,7 @@ do {								\
     reg[0] = (Eterm) (A0);					\
     reg[1] = (Eterm) (A1);					\
     reg[2] = (Eterm) (A2);					\
-    (Proc)->i = (BeamInstr*) ((Trap)->address);			\
+    (Proc)->i = (BeamInstr*) ((Trap)->addressv[erts_active_code_ix()]); \
     (Proc)->freason = TRAP;					\
     (Ret) = THE_NON_VALUE;					\
 } while (0)
@@ -170,13 +170,13 @@ do {							\
     reg[0] = (Eterm) (A0);		\
     reg[1] = (Eterm) (A1);		\
     reg[2] = (Eterm) (A2);		\
-    (Proc)->i = (BeamInstr*) ((Trap)->address);			\
+    (Proc)->i = (BeamInstr*) ((Trap)->addressv[erts_active_code_ix()]); \
     (Proc)->freason = TRAP;				\
 } while (0)
 
 #define BIF_TRAP0(p, Trap_) do {		\
       (p)->arity = 0;				\
-      (p)->i = (BeamInstr*) ((Trap_)->address);	\
+      (p)->i = (BeamInstr*) ((Trap_)->addressv[erts_active_code_ix()]);	\
       (p)->freason = TRAP;			\
       return THE_NON_VALUE;			\
  } while(0)
@@ -185,7 +185,7 @@ do {							\
       Eterm* reg = ERTS_PROC_GET_SCHDATA((p))->x_reg_array;	\
       (p)->arity = 1;						\
       reg[0] = (A0);						\
-      (p)->i = (BeamInstr*) ((Trap_)->address);			\
+      (p)->i = (BeamInstr*) ((Trap_)->addressv[erts_active_code_ix()]); \
       (p)->freason = TRAP;					\
       return THE_NON_VALUE;					\
  } while(0)
@@ -195,7 +195,7 @@ do {							\
       (p)->arity = 2;						\
       reg[0] = (A0);						\
       reg[1] = (A1);						\
-      (p)->i = (BeamInstr*) ((Trap_)->address);			\
+      (p)->i = (BeamInstr*) ((Trap_)->addressv[erts_active_code_ix()]); \
       (p)->freason = TRAP;					\
       return THE_NON_VALUE;					\
  } while(0)
@@ -206,7 +206,7 @@ do {							\
       reg[0] = (A0);						\
       reg[1] = (A1);						\
       reg[2] = (A2);						\
-      (p)->i = (BeamInstr*) ((Trap_)->address);			\
+      (p)->i = (BeamInstr*) ((Trap_)->addressv[erts_active_code_ix()]); \
       (p)->freason = TRAP;					\
       return THE_NON_VALUE;					\
  } while(0)
@@ -321,27 +321,6 @@ do {					\
     if (ERTS_PROC_IS_EXITING((PROC)))	\
 	ERTS_BIF_EXITED((PROC));	\
 } while (0)
-
-#ifdef ERTS_SMP
-#define ERTS_SMP_BIF_CHK_PENDING_EXIT(P, L)				\
-do {									\
-    ERTS_SMP_LC_ASSERT((L) == erts_proc_lc_my_proc_locks((P)));		\
-    ERTS_SMP_LC_ASSERT(ERTS_PROC_LOCK_MAIN & (L));			\
-    if (!((L) & ERTS_PROC_LOCK_STATUS))					\
-	erts_smp_proc_lock((P), ERTS_PROC_LOCK_STATUS);			\
-    if (ERTS_PROC_PENDING_EXIT((P))) {					\
-	erts_handle_pending_exit((P), (L)|ERTS_PROC_LOCK_STATUS);	\
-	erts_smp_proc_unlock((P),					\
-			     (((L)|ERTS_PROC_LOCK_STATUS)		\
-			      & ~ERTS_PROC_LOCK_MAIN));			\
-	ERTS_BIF_EXITED((P));						\
-    }									\
-    if (!((L) & ERTS_PROC_LOCK_STATUS))					\
-	erts_smp_proc_unlock((P), ERTS_PROC_LOCK_STATUS);		\
-} while (0)
-#else
-#define ERTS_SMP_BIF_CHK_PENDING_EXIT(P, L)
-#endif
 
 /*
  * The ERTS_BIF_*_AWAIT_X_*_TRAP makros either exits the caller, or

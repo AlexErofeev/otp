@@ -56,6 +56,7 @@
 #define FILE_FDATASYNC          30
 #define FILE_FADVISE            31
 #define FILE_SENDFILE           32
+#define FILE_FALLOCATE          33
 
 /* Return codes */
 
@@ -439,6 +440,7 @@ struct t_data
     Efile_error    errInfo;
     int            flags;
     SWord          fd;
+    int            is_fd_unused;
     /**/
     Efile_info        info;
     EFILE_DIR_HANDLE  dir_handle; /* Handle to open directory. */
@@ -503,6 +505,10 @@ struct t_data
 	    Uint64 written;
 	} sendfile;
 #endif /* HAVE_SENDFILE */
+	struct {
+	    Sint64 offset;
+	    Sint64 length;
+	} fallocate;
     } c;
     char b[1];
 };
@@ -781,11 +787,6 @@ file_start(ErlDrvPort port, char* command)
     return (ErlDrvData) desc;
 }
 
-static void free_data(void *data)
-{
-    EF_FREE(data);
-}
-
 static void do_close(int flags, SWord fd) {
     if (flags & EFILE_COMPRESSED) {
 	erts_gzclose((gzFile)(fd));
@@ -801,6 +802,17 @@ static void invoke_close(void *data)
     d->again = 0;
     do_close(d->flags, d->fd);
     DTRACE_INVOKE_RETURN(FILE_CLOSE);
+}
+
+static void free_data(void *data)
+{
+    struct t_data *d = (struct t_data *) data;
+
+    if (d->command == FILE_OPEN && d->is_fd_unused && d->fd != FILE_FD_INVALID) {
+        do_close(d->flags, d->fd);
+    }
+
+    EF_FREE(data);
 }
 
 /*********************************************************************
@@ -1862,6 +1874,9 @@ static void invoke_open(void *data)
     }
 
     d->result_ok = status;
+    if (!status) {
+        d->fd = FILE_FD_INVALID;
+    }
     DTRACE_INVOKE_RETURN(FILE_OPEN);
 }
 
@@ -1952,6 +1967,17 @@ static int flush_sendfile(file_descriptor *desc,void *_) {
 }
 #endif /* HAVE_SENDFILE */
 
+
+static void invoke_fallocate(void *data)
+{
+    struct t_data *d = (struct t_data *) data;
+    int fd = (int) d->fd;
+    Sint64 offset = d->c.fallocate.offset;
+    Sint64 length = d->c.fallocate.length;
+
+    d->again = 0;
+    d->result_ok = efile_fallocate(&d->errInfo, fd, offset, length);
+}
 
 static void free_readdir(void *data)
 {
@@ -2348,6 +2374,7 @@ file_async_ready(ErlDrvData e, ErlDrvThreadData data)
       case FILE_RENAME:
       case FILE_WRITE_INFO:
       case FILE_FADVISE:
+      case FILE_FALLOCATE:
 	reply(desc, d->result_ok, &d->errInfo);
 	free_data(data);
 	break;
@@ -2373,8 +2400,10 @@ file_async_ready(ErlDrvData e, ErlDrvThreadData data)
 	if (!d->result_ok) {
 	    reply_error(desc, &d->errInfo);
 	} else {
+	    ASSERT(d->is_fd_unused);
 	    desc->fd = d->fd;
 	    desc->flags = d->flags;
+	    d->is_fd_unused = 0;
 	    reply_Uint(desc, d->fd);
 	}
 	free_data(data);
@@ -2745,6 +2774,7 @@ file_output(ErlDrvData e, char* buf, ErlDrvSizeT count)
 	    d->invoke = invoke_open;
 	    d->free = free_data;
 	    d->level = 2;
+	    d->is_fd_unused = 1;
 	    goto done;
 	}
 
@@ -2955,6 +2985,20 @@ file_output(ErlDrvData e, char* buf, ErlDrvSizeT count)
         dt_i4 = d->c.fadvise.advise;
         dt_utag = buf + 3 * sizeof(Sint64);
 #endif
+        goto done;
+    }
+
+    case FILE_FALLOCATE:
+    {
+        d = EF_SAFE_ALLOC(sizeof(struct t_data));
+
+        d->fd = fd;
+        d->command = command;
+        d->invoke = invoke_fallocate;
+        d->free = free_data;
+        d->level = 2;
+        d->c.fallocate.offset = get_int64((uchar*) buf);
+        d->c.fallocate.length = get_int64(((uchar*) buf) + sizeof(Sint64));
         goto done;
     }
 

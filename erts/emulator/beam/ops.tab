@@ -62,11 +62,8 @@ label L
 i_func_info I a a I
 int_code_end
 
-i_trace_breakpoint
-i_mtrace_breakpoint
+i_generic_breakpoint
 i_debug_breakpoint
-i_count_breakpoint
-i_time_breakpoint
 i_return_time_trace
 i_return_to_trace
 i_yield
@@ -522,7 +519,6 @@ apply_bif
 call_nif
 call_error_handler
 error_action_code
-call_traced_function
 return_trace
 
 #
@@ -829,16 +825,20 @@ call_ext_only Ar=u==2 Bif=u$bif:erlang:load_nif/2 => allocate u Ar | i_call_ext 
 
 
 #
-# The apply/2 and apply/3 BIFs are instructions.
+# apply/2 is an instruction, not a BIF.
 #
 
 call_ext u==2 u$func:erlang:apply/2 => i_apply_fun
 call_ext_last u==2 u$func:erlang:apply/2 D => i_apply_fun_last D
 call_ext_only u==2 u$func:erlang:apply/2 => i_apply_fun_only
 
-call_ext u==3 u$func:erlang:apply/3 => i_apply
-call_ext_last u==3 u$func:erlang:apply/3 D => i_apply_last D
-call_ext_only u==3 u$func:erlang:apply/3 => i_apply_only
+#
+# The apply/3 BIF is an instruction.
+#
+
+call_ext u==3 u$bif:erlang:apply/3 => i_apply
+call_ext_last u==3 u$bif:erlang:apply/3 D => i_apply_last D
+call_ext_only u==3 u$bif:erlang:apply/3 => i_apply_only
 
 #
 # The exit/1 and throw/1 BIFs never execute the instruction following them;

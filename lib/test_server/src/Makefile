@@ -40,24 +40,24 @@ RELSYSDIR = $(RELEASE_PATH)/lib/test_server-$(VSN)
 # ----------------------------------------------------
 
 MODULES= test_server_ctrl \
+	 test_server_gl \
+	 test_server_io \
 	 test_server_node \
 	 test_server \
 	 test_server_sup \
 	 test_server_h \
-	 erl2html2 \
-	 vxworks_client
+	 erl2html2
 
 TS_MODULES= \
 	ts \
 	ts_run \
-	ts_reports \
 	ts_lib \
 	ts_make \
 	ts_erl_config \
 	ts_autoconf_win32 \
-        ts_autoconf_vxworks \
 	ts_install \
-	ts_install_cth
+	ts_install_cth \
+	ts_benchmark
 
 TARGET_MODULES= $(MODULES:%=$(EBIN)/%)
 TS_TARGET_MODULES= $(TS_MODULES:%=$(EBIN)/%)
@@ -69,7 +69,6 @@ INTERNAL_HRL_FILES = test_server_internal.hrl
 TS_HRL_FILES= ts.hrl
 C_FILES = 
 AUTOCONF_FILES = configure.in conf_vars.in
-COVER_FILES = cross.cover
 PROGRAMS = configure config.sub config.guess install-sh 
 CONFIG = ts.config ts.unix.config ts.win32.config
 
@@ -137,7 +136,7 @@ release_tests_spec: opt
 	$(INSTALL_DATA) $(ERL_FILES) $(TS_ERL_FILES) \
 		$(HRL_FILES) $(INTERNAL_HRL_FILES) $(TS_HRL_FILES) \
 		$(TS_TARGET_FILES) \
-		$(AUTOCONF_FILES) $(C_FILES) $(COVER_FILES) $(CONFIG) \
+		$(AUTOCONF_FILES) $(C_FILES) $(CONFIG) \
 		"$(RELEASE_PATH)/test_server"
 	$(INSTALL_SCRIPT) $(PROGRAMS) "$(RELEASE_PATH)/test_server"
 

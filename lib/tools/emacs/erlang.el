@@ -1,4 +1,10 @@
-;; erlang.el --- Major modes for editing and running Erlang
+;;; erlang.el --- Major modes for editing and running Erlang
+
+;; Copyright (C) 2004  Free Software Foundation, Inc.
+;; Author:   Anders Lindgren
+;; Keywords: erlang, languages, processes
+;; Date:     2011-12-11
+
 ;; %CopyrightBegin%
 ;;
 ;; Copyright Ericsson AB 1996-2012. All Rights Reserved.
@@ -15,10 +21,7 @@
 ;; under the License.
 ;;
 ;; %CopyrightEnd%
-;; 
-;; Copyright (C) 2004  Free Software Foundation, Inc.
-;; Author:   Anders Lindgren
-;; Keywords: erlang, languages, processes
+;;
 
 ;; Lars Thorsén's modifications of 2000-06-07 included.
 ;; The original version of this package was written by Robert Virding.
@@ -482,10 +485,6 @@ function.")
 (defvar erlang-tab-always-indent t
   "*Non-nil means TAB in Erlang mode should always re-indent the current line,
 regardless of where in the line point is when the TAB command is used.")
-
-(defvar erlang-error-regexp-alist
-  '(("^\\([^:( \t\n]+\\)[:(][ \t]*\\([0-9]+\\)[:) \t]" . (1 2)))
-  "*Patterns for matching Erlang errors.")
 
 (defvar erlang-man-inhibit (eq system-type 'windows-nt)
   "Inhibit the creation of the Erlang Manual Pages menu.
@@ -998,6 +997,22 @@ behaviour.")
 	 1 'font-lock-function-name-face t))
   "Font lock keyword highlighting a function header.")
 
+(defface erlang-font-lock-exported-function-name-face
+  '((default (:inherit font-lock-function-name-face)))
+  "Face used for highlighting exported functions.")
+
+(defvar erlang-font-lock-exported-function-name-face
+  'erlang-font-lock-exported-function-name-face)
+
+(defvar erlang-inhibit-exported-function-name-face nil
+  "Inhibit separate face for exported functions")
+
+(defvar erlang-font-lock-keywords-exported-function-header
+  (list
+   (list #'erlang-match-next-exported-function
+	 1 'erlang-font-lock-exported-function-name-face t))
+  "Font lock keyword highlighting an exported function header.")
+
 (defvar erlang-font-lock-keywords-int-bifs
   (list
    (list (concat erlang-int-bif-regexp "\\s-*(")
@@ -1133,7 +1148,8 @@ There exists three levels of Font Lock keywords for Erlang:
   `erlang-font-lock-keywords-1' - Function headers and reserved keywords.
   `erlang-font-lock-keywords-2' - Bifs, guards and `single quotes'.
   `erlang-font-lock-keywords-3' - Variables, macros and records.
-  `erlang-font-lock-keywords-4' - Function names, Funs, LCs (not Atoms)
+  `erlang-font-lock-keywords-4' - Exported functions, Function names,
+                                  Funs, LCs (not Atoms).
 
 To use a specific level, please set the variable
 `font-lock-maximum-decoration' to the appropriate level.  Note that the
@@ -1175,6 +1191,7 @@ Example:
 
 (defvar erlang-font-lock-keywords-4
   (append erlang-font-lock-keywords-3
+          erlang-font-lock-keywords-exported-function-header
           erlang-font-lock-keywords-int-function-calls
 	  erlang-font-lock-keywords-ext-function-calls
 	  erlang-font-lock-keywords-fun-n
@@ -1327,7 +1344,6 @@ Other commands:
   (erlang-menu-init)
   (erlang-mode-variables)
   (erlang-check-module-name-init)
-  (erlang-add-compilation-alist erlang-error-regexp-alist)
   (erlang-man-init)
   (erlang-tags-init)
   (erlang-font-lock-init)
@@ -1443,31 +1459,6 @@ Other commands:
   (set (make-local-variable 'outline-level) (lambda () 1))
   (set (make-local-variable 'add-log-current-defun-function)
        'erlang-current-defun))
-
-
-;; Compilation.
-;;
-;; The following code is compatible with the standard package `compilation',
-;; making it possible to go to errors using `erlang-next-error' (or just
-;; `next-error' in Emacs 21).
-;;
-;; The normal `compile' command works of course.  For best result, please
-;; execute `make' with the `-w' flag.
-;;
-;; Please see the variables named `compiling-..' above.
-
-(defun erlang-add-compilation-alist (alist)
-  (require 'compile)
-  (cond ((boundp 'compilation-error-regexp-alist) ; Emacs 19
-	 (while alist
-	   (or (assoc (car (car alist)) compilation-error-regexp-alist)
-	       (setq compilation-error-regexp-alist
-		     (cons (car alist) compilation-error-regexp-alist)))
-	   (setq alist (cdr alist))))
-	((boundp 'compilation-error-regexp)
-	 ;; Emacs 18,  Only one regexp is allowed.
-	 (funcall (symbol-function 'set)
-		  'compilation-error-regexp (car (car alist))))))
 
 (defun erlang-font-lock-init ()
   "Initialize Font Lock for Erlang mode."
@@ -3689,6 +3680,38 @@ In the future the list may contain more elements."
 	  str)
       (store-match-data md))))
 
+(defun erlang-match-next-exported-function (max)
+  "Returns non-nil if there is an exported function in the current
+buffer between point and MAX."
+  (block nil
+    (while (and (not erlang-inhibit-exported-function-name-face)
+                (erlang-match-next-function max))
+      (when (erlang-last-match-exported-p)
+        (return (match-data))))))
+
+(defun erlang-match-next-function (max)
+  "Searches forward in current buffer for the next erlang function,
+bounded by position MAX."
+  (re-search-forward erlang-defun-prompt-regexp max 'move-point))
+
+(defun erlang-last-match-exported-p ()
+  "Returns non-nil if match-data describes the name and arity of an
+exported function."
+  (save-excursion
+    (save-match-data
+      (goto-char (match-beginning 1))
+      (erlang-function-exported-p
+       (erlang-remove-quotes (erlang-get-function-name))
+       (erlang-get-function-arity)))))
+
+(defun erlang-function-exported-p (name arity)
+  "Returns non-nil if function of name and arity is exported in current buffer."
+  (save-excursion
+    (let* ((old-match-data (match-data))
+           (exports        (erlang-get-export)))
+      (store-match-data old-match-data)
+      (member (cons name arity) exports))))
+
 
 ;;; Check module name
 
@@ -4896,7 +4919,6 @@ The following special commands are available:
     (set (make-local-variable 'compilation-old-error-list) nil))
   ;; Needed when compiling directly from the Erlang shell.
   (setq compilation-last-buffer (current-buffer))
-  (erlang-add-compilation-alist erlang-error-regexp-alist)
   (setq comint-prompt-regexp "^[^>=]*> *")
   (setq comint-eol-on-send t)
   (setq comint-input-ignoredups t)

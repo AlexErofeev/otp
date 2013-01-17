@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 2008-2011. All Rights Reserved.
+%% Copyright Ericsson AB 2008-2013. All Rights Reserved.
 %% 
 %% The contents of this file are subject to the Erlang Public License,
 %% Version 1.1, (the "License"); you may not use this file except in
@@ -32,10 +32,10 @@
 
 		pid,           % pid() Debugged process
 		meta,          % pid() Meta process
-		status,        % {Status,Mod,Line} ¦ {exit,Where,Reason}
-		               %   Status = init ¦ idle | break
-		               %      | wait_break ¦ wait_running
-		               %      ¦ running
+		status,        % {Status,Mod,Line} | {exit,Where,Reason}
+		               %   Status = init | idle | break
+		               %      | wait_break | wait_running
+		               %      | running
                                % Where={Mod,Line} | null
 
 		cm,            % atom() | undefined Current module
@@ -513,7 +513,7 @@ gui_cmd({edit, {Var, Val}}, State) ->
 	cancel ->
 	    State;
 	{Var, Term} ->
-	    Cmd = atom_to_list(Var)++"="++io_lib:format("~p", [Term]),
+	    Cmd = atom_to_list(Var)++"="++io_lib:format("~w", [Term]),
 	    gui_cmd({user_command, lists:flatten(Cmd)}, State)
     end.
 
@@ -740,7 +740,7 @@ menus() ->
 
 %% enable(Status) -> [MenuItem]
 %%   Status = init  % when first message from Meta has arrived
-%%          | idle | break | exit | wait_break ¦ wait_running | running
+%%          | idle | break | exit | wait_break | wait_running | running
 enable(init) -> [];
 enable(idle) -> ['Stop','Kill'];
 enable(break) -> ['Step','Next','Continue','Finish','Skip',

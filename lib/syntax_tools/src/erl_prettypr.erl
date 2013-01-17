@@ -60,7 +60,9 @@
 	       hook = ?NOHOOK     :: hook(),
 	       paper = ?PAPER     :: integer(),
 	       ribbon = ?RIBBON   :: integer(),
-	       user = ?NOUSER     :: term()}).
+	       user = ?NOUSER     :: term(),
+               encoding = epp:default_encoding() :: epp:source_encoding()}).
+
 -type context() :: #ctxt{}.
 
 %% =====================================================================
@@ -231,6 +233,8 @@ format(Node) ->
 %%   <dt>{user, term()}</dt>
 %%       <dd>User-specific data for use in hook functions. The default
 %%       value is `undefined'.</dd>
+%%   <dt>{encoding, epp:source_encoding()}</dt>
+%%       <dd>Specifies the encoding of the generated file.</dd>
 %% </dl>
 %%
 %% A hook function (cf. the {@link hook()} type) is passed the current
@@ -342,7 +346,9 @@ layout(Node, Options) ->
 	#ctxt{hook = proplists:get_value(hook, Options, ?NOHOOK),
 	      paper = proplists:get_value(paper, Options, ?PAPER),
 	      ribbon = proplists:get_value(ribbon, Options, ?RIBBON),
-	      user = proplists:get_value(user, Options)}).
+	      user = proplists:get_value(user, Options),
+              encoding = proplists:get_value(encoding, Options,
+                                             epp:default_encoding())}).
 
 lay(Node, Ctxt) ->
     case erl_syntax:get_ann(Node) of
@@ -445,10 +451,10 @@ lay_2(Node, Ctxt) ->
 	    text(tidy_float(erl_syntax:float_literal(Node)));
 	
 	char ->
-	    text(erl_syntax:char_literal(Node));
+	    text(erl_syntax:char_literal(Node, Ctxt#ctxt.encoding));
 	
 	string ->
-	    lay_string(erl_syntax:string_literal(Node), Ctxt);
+	    lay_string(erl_syntax:string_literal(Node, Ctxt#ctxt.encoding), Ctxt);
 
 	nil ->
 	    text("[]");
@@ -638,10 +644,6 @@ lay_2(Node, Ctxt) ->
 	    D2 = lay(erl_syntax:module_qualifier_body(Node),
 		     set_prec(Ctxt, PrecR)),
 	    beside(D1, beside(text(":"), D2));
-
-	qualified_name ->
-	    Ss = erl_syntax:qualified_name_segments(Node),
-	    lay_qualified_name(Ss, Ctxt);
 
 	%%
 	%% The rest is in alphabetical order
@@ -965,26 +967,6 @@ maybe_parentheses(D, Prec, Ctxt) ->
 	_ ->
 	    D
     end.
-
-lay_qualified_name([S | Ss1] = Ss, Ctxt) ->
-    case erl_syntax:type(S) of
-	atom ->
-	    case erl_syntax:atom_value(S) of
-		'' ->
-		    beside(text("."),
-			   lay_qualified_name_1(Ss1, Ctxt));
-		_ ->
-		    lay_qualified_name_1(Ss, Ctxt)
-	    end;
-	_ ->
-	    lay_qualified_name_1(Ss, Ctxt)
-    end.
-
-lay_qualified_name_1([S], Ctxt) ->
-    lay(S, Ctxt);
-lay_qualified_name_1([S | Ss], Ctxt) ->
-    beside(lay(S, Ctxt), beside(text("."),
-				lay_qualified_name_1(Ss, Ctxt))).
 
 lay_string(S, Ctxt) ->
     %% S includes leading/trailing double-quote characters. The segment

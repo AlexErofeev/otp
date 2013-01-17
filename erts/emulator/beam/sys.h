@@ -25,11 +25,6 @@
 #  define NO_FPE_SIGNALS
 #endif
 
-/* xxxP __VXWORKS__ */
-#ifdef VXWORKS
-#include <vxWorks.h>
-#endif
-
 #ifdef DISABLE_CHILD_WAITER_THREAD
 #undef ENABLE_CHILD_WAITER_THREAD
 #endif
@@ -39,10 +34,10 @@
 #define ENABLE_CHILD_WAITER_THREAD 1
 #endif
 
+#define ERTS_I64_LITERAL(X) X##LL
+
 #if defined (__WIN32__)
 #  include "erl_win_sys.h"
-#elif defined (VXWORKS) 
-#  include "erl_vxworks_sys.h"
 #else 
 #  include "erl_unix_sys.h"
 #ifndef UNIX
@@ -91,14 +86,22 @@ typedef ERTS_SYS_FD_TYPE ErtsSysFdType;
 #  endif
 #endif
 
-#ifdef __GNUC__
-#  if __GNUC__ < 3 && (__GNUC__ != 2 || __GNUC_MINOR__ < 96)
-#    define ERTS_LIKELY(BOOL)   (BOOL)
-#    define ERTS_UNLIKELY(BOOL) (BOOL)
-#  else
-#    define ERTS_LIKELY(BOOL)   __builtin_expect((BOOL), !0)
-#    define ERTS_UNLIKELY(BOOL) __builtin_expect((BOOL), 0)
-#  endif
+#if !defined(__GNUC__)
+#  define ERTS_AT_LEAST_GCC_VSN__(MAJ, MIN, PL) 0
+#elif !defined(__GNUC_MINOR__)
+#  define ERTS_AT_LEAST_GCC_VSN__(MAJ, MIN, PL) \
+  ((__GNUC__ << 24) >= (((MAJ) << 24) | ((MIN) << 12) | (PL)))
+#elif !defined(__GNUC_PATCHLEVEL__)
+#  define ERTS_AT_LEAST_GCC_VSN__(MAJ, MIN, PL) \
+  (((__GNUC__ << 24) | (__GNUC_MINOR__ << 12)) >= (((MAJ) << 24) | ((MIN) << 12) | (PL)))
+#else
+#  define ERTS_AT_LEAST_GCC_VSN__(MAJ, MIN, PL) \
+  (((__GNUC__ << 24) | (__GNUC_MINOR__ << 12) | __GNUC_PATCHLEVEL__) >= (((MAJ) << 24) | ((MIN) << 12) | (PL)))
+#endif
+
+#if ERTS_AT_LEAST_GCC_VSN__(2, 96, 0)
+#  define ERTS_LIKELY(BOOL)   __builtin_expect((BOOL), !0)
+#  define ERTS_UNLIKELY(BOOL) __builtin_expect((BOOL), 0)
 #else
 #  define ERTS_LIKELY(BOOL)   (BOOL)
 #  define ERTS_UNLIKELY(BOOL) (BOOL)
@@ -111,6 +114,16 @@ typedef ERTS_SYS_FD_TYPE ErtsSysFdType;
 #  endif
 #else
 #  define ERTS_DECLARE_DUMMY(X) X
+#endif
+
+#if !defined(__func__)
+#  if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 199901L
+#    if !defined(__GNUC__) ||  __GNUC__ < 2
+#      define __func__ "[unknown_function]"
+#    else
+#      define __func__ __FUNCTION__
+#    endif
+#  endif
 #endif
 
 #if defined(DEBUG) || defined(ERTS_ENABLE_LOCK_CHECK)
@@ -172,10 +185,16 @@ void erl_assert_error(char* expr, char* file, int line);
 #  define const
 #endif
 
-#ifdef VXWORKS
-/* Replace VxWorks' printf with a real one that does fprintf(stdout, ...) */
-int real_printf(const char *fmt, ...);
-#  define printf real_printf
+#undef __deprecated
+#if ERTS_AT_LEAST_GCC_VSN__(3, 0, 0)
+#  define __deprecated __attribute__((deprecated))
+#else
+#  define __deprecated
+#endif
+#if ERTS_AT_LEAST_GCC_VSN__(3, 0, 4)
+#  define erts_align_attribute(SZ) __attribute__ ((aligned (SZ)))
+#else
+#  define erts_align_attribute(SZ)
 #endif
 
 /* In VC++, noreturn is a declspec that has to be before the types,
@@ -185,12 +204,6 @@ int real_printf(const char *fmt, ...);
 #if __GNUC__
 #  define __decl_noreturn 
 #  define __noreturn __attribute__((noreturn))
-#  undef __deprecated
-#  if __GNUC__ >= 3
-#    define __deprecated __attribute__((deprecated))
-#  else
-#    define __deprecated
-#  endif
 #else
 #  if defined(__WIN32__) && defined(_MSC_VER)
 #    define __noreturn 
@@ -199,7 +212,6 @@ int real_printf(const char *fmt, ...);
 #    define __noreturn
 #    define __decl_noreturn 
 #  endif
-#  define __deprecated
 #endif
 
 /*
@@ -229,9 +241,11 @@ int real_printf(const char *fmt, ...);
 #if SIZEOF_VOID_P == 8
 #undef  ARCH_32
 #define ARCH_64
+#define ERTS_SIZEOF_TERM 8
 #elif SIZEOF_VOID_P == 4
 #define ARCH_32
 #undef  ARCH_64
+#define ERTS_SIZEOF_TERM 4
 #else
 #error Neither 32 nor 64 bit architecture
 #endif
@@ -239,6 +253,8 @@ int real_printf(const char *fmt, ...);
 #    define HALFWORD_HEAP 1
 #    define HALFWORD_ASSERT 0
 #    define ASSERT_HALFWORD(COND) ASSERT(COND)
+#    undef ERTS_SIZEOF_TERM
+#    define ERTS_SIZEOF_TERM 4
 #else
 #    define HALFWORD_HEAP 0
 #    define HALFWORD_ASSERT 0
@@ -365,6 +381,27 @@ typedef unsigned char byte;
 #error 64-bit architecture, but no appropriate type to use for Uint64 and Sint64 found 
 #endif
 
+#ifdef WORDS_BIGENDIAN
+#  define ERTS_HUINT_HVAL_HIGH 0
+#  define ERTS_HUINT_HVAL_LOW 1
+#else
+#  define ERTS_HUINT_HVAL_HIGH 1
+#  define ERTS_HUINT_HVAL_LOW 0
+#endif
+#if ERTS_SIZEOF_TERM == 8
+typedef union {
+    Uint val;
+    Uint32 hval[2];
+} HUint;
+#elif ERTS_SIZEOF_TERM == 4
+typedef union {
+    Uint val;
+    Uint16 hval[2];
+} HUint;
+#else
+#error "Unsupported size of term"
+#endif
+
 #  define ERTS_EXTRA_DATA_ALIGN_SZ(X) \
     (((size_t) 8) - (((size_t) (X)) & ((size_t) 7)))
 
@@ -471,38 +508,28 @@ static unsigned long zero_value = 0, one_value = 1;
 #    define SET_NONBLOCKING(fd)	ioctlsocket((fd), FIONBIO, &one_value)
 
 #  else
-#    ifdef VXWORKS
-#      include <fcntl.h> /* xxxP added for O_WRONLY etc ... macro:s ... */
-#      include <ioLib.h>
-static const int zero_value = 0, one_value = 1;
-#      define SET_BLOCKING(fd)	ioctl((fd), FIONBIO, (int)&zero_value)
-#      define SET_NONBLOCKING(fd)	ioctl((fd), FIONBIO, (int)&one_value)
-#      define ERRNO_BLOCK EWOULDBLOCK
-
-#    else
-#      ifdef NB_FIONBIO		/* Old BSD */
-#        include <sys/ioctl.h>
+#    ifdef NB_FIONBIO		/* Old BSD */
+#      include <sys/ioctl.h>
   static const int zero_value = 0, one_value = 1;
-#        define SET_BLOCKING(fd)	ioctl((fd), FIONBIO, &zero_value)
-#        define SET_NONBLOCKING(fd)	ioctl((fd), FIONBIO, &one_value)
-#        define ERRNO_BLOCK EWOULDBLOCK
-#      else /* !NB_FIONBIO */
-#        include <fcntl.h>
-#        ifdef NB_O_NDELAY		/* Nothing needs this? */
-#          define NB_FLAG O_NDELAY
-#          ifndef ERRNO_BLOCK		/* allow override (e.g. EAGAIN) via Makefile */
-#            define ERRNO_BLOCK EWOULDBLOCK
-#          endif
-#        else  /* !NB_O_NDELAY */	/* The True Way - POSIX!:-) */
-#          define NB_FLAG O_NONBLOCK
-#          define ERRNO_BLOCK EAGAIN
-#        endif /* !NB_O_NDELAY */
-#        define SET_BLOCKING(fd)	fcntl((fd), F_SETFL, \
-	  			      fcntl((fd), F_GETFL, 0) & ~NB_FLAG)
-#        define SET_NONBLOCKING(fd)	fcntl((fd), F_SETFL, \
-				      fcntl((fd), F_GETFL, 0) | NB_FLAG)
-#      endif /* !NB_FIONBIO */
-#    endif /* _WXWORKS_ */
+#      define SET_BLOCKING(fd)         ioctl((fd), FIONBIO, &zero_value)
+#      define SET_NONBLOCKING(fd)      ioctl((fd), FIONBIO, &one_value)
+#      define ERRNO_BLOCK EWOULDBLOCK
+#    else /* !NB_FIONBIO */
+#      include <fcntl.h>
+#      ifdef NB_O_NDELAY               /* Nothing needs this? */
+#        define NB_FLAG O_NDELAY
+#        ifndef ERRNO_BLOCK            /* allow override (e.g. EAGAIN) via Makefile */
+#          define ERRNO_BLOCK EWOULDBLOCK
+#        endif
+#      else  /* !NB_O_NDELAY */	/* The True Way - POSIX!:-) */
+#        define NB_FLAG O_NONBLOCK
+#        define ERRNO_BLOCK EAGAIN
+#      endif /* !NB_O_NDELAY */
+#      define SET_BLOCKING(fd)         fcntl((fd), F_SETFL, \
+                                           fcntl((fd), F_GETFL, 0) & ~NB_FLAG)
+#      define SET_NONBLOCKING(fd)      fcntl((fd), F_SETFL, \
+                                           fcntl((fd), F_GETFL, 0) | NB_FLAG)
+#    endif /* !NB_FIONBIO */
 #  endif /* !__WIN32__ */
 #endif /* WANT_NONBLOCKING */
 
@@ -512,6 +539,10 @@ __decl_noreturn void __noreturn erl_exit(int n, char*, ...);
 #define ERTS_INTR_EXIT	INT_MIN		/* called from signal handler */
 #define ERTS_ABORT_EXIT	(INT_MIN + 1)	/* no crash dump; only abort() */
 #define ERTS_DUMP_EXIT	(INT_MIN + 2)	/* crash dump; then exit() */
+
+#define ERTS_INTERNAL_ERROR(What) \
+    erl_exit(ERTS_ABORT_EXIT, "%s:%d:%s(): Internal error: %s\n", \
+	     __FILE__, __LINE__, __func__, What)
 
 Eterm erts_check_io_info(void *p);
 
@@ -587,6 +618,7 @@ typedef struct _SysDriverOpts {
     char *wd;			/* Working directory. */
     unsigned spawn_type;        /* Bitfield of ERTS_SPAWN_DRIVER | 
 				   ERTS_SPAWN_EXTERNAL | both*/ 
+    int parallelism;            /* Optimize for parallelism */
 } SysDriverOpts;
 
 extern char *erts_default_arg0;
@@ -626,7 +658,7 @@ typedef struct {
 #define ERTS_SYS_DDLL_ERROR_INIT {NULL}
 extern void erts_sys_ddll_free_error(ErtsSysDdllError*);
 extern void erl_sys_ddll_init(void); /* to initialize mutexes etc */
-extern int erts_sys_ddll_open2(char *path, void **handle, ErtsSysDdllError*);
+extern int erts_sys_ddll_open2(const char *path, void **handle, ErtsSysDdllError*);
 #define erts_sys_ddll_open(P,H) erts_sys_ddll_open2(P,H,NULL)
 extern int erts_sys_ddll_open_noext(char *path, void **handle, ErtsSysDdllError*);
 extern int erts_sys_ddll_load_driver_init(void *handle, void **function);
@@ -635,7 +667,7 @@ extern int erts_sys_ddll_close2(void *handle, ErtsSysDdllError*);
 #define erts_sys_ddll_close(H) erts_sys_ddll_close2(H,NULL)
 extern void *erts_sys_ddll_call_init(void *function);
 extern void *erts_sys_ddll_call_nif_init(void *function);
-extern int erts_sys_ddll_sym2(void *handle, char *name, void **function, ErtsSysDdllError*);
+extern int erts_sys_ddll_sym2(void *handle, const char *name, void **function, ErtsSysDdllError*);
 #define erts_sys_ddll_sym(H,N,F) erts_sys_ddll_sym2(H,N,F,NULL)
 extern char *erts_sys_ddll_error(int code);
 
@@ -699,8 +731,8 @@ void fini_getenv_state(GETENV_STATE *);
 /* xxxP */
 void init_sys_float(void);
 int sys_chars_to_double(char*, double*);
-int sys_double_to_chars(double, char*);
-void sys_get_pid(char *);
+int sys_double_to_chars(double, char*, size_t);
+void sys_get_pid(char *, size_t);
 
 /* erts_sys_putenv() returns, 0 on success and a value != 0 on failure. */
 int erts_sys_putenv(char *key, char *value);
@@ -858,13 +890,6 @@ erts_refc_read(erts_refc_t *refcp, erts_aint_t min_val)
 extern int erts_use_kernel_poll;
 #endif
 
-#if defined(VXWORKS)
-/* NOTE! sys_calloc2 does not exist on other 
-   platforms than VxWorks and OSE */
-void* sys_calloc2(Uint, Uint);
-#endif /* VXWORKS || OSE */
-
-
 #define sys_memcpy(s1,s2,n)  memcpy(s1,s2,n)
 #define sys_memmove(s1,s2,n) memmove(s1,s2,n)
 #define sys_memcmp(s1,s2,n)  memcmp(s1,s2,n)
@@ -971,43 +996,6 @@ void erl_bin_write(unsigned char *, int, int);
 #  define DEBUGF(x)
 #endif
 
-
-#ifdef VXWORKS
-/* This includes redefines of malloc etc 
-   this should be done after sys_alloc, etc, above */
-#  include "reclaim.h"
-/*********************Malloc and friends************************
- * There is a problem with the naming of malloc and friends, 
- * malloc is used throughout sys.c and the resolver to mean save_alloc,
- * but it should actually mean either sys_alloc or sys_alloc2,
- * so the definitions from reclaim_master.h are not any
- * good, i redefine the malloc family here, although it's quite 
- * ugly, actually it would be preferrable to use the
- * names sys_alloc and so on throughout the offending code, but
- * that will be saved as an later exercise...
- * I also add an own calloc, to make the BSD resolver source happy.
- ***************************************************************/
-/* Undefine malloc and friends */
-#  ifdef malloc
-#    undef malloc
-#  endif
-#  ifdef calloc
-#    undef calloc
-#  endif
-#  ifdef realloc
-#    undef realloc
-#  endif
-#  ifdef free
-#    undef free
-#  endif
-/* Redefine malloc and friends */
-#  define malloc sys_alloc
-#  define calloc  sys_calloc
-#  define realloc  sys_realloc
-#  define free sys_free
-
-#endif
-
 #ifdef __WIN32__
 #ifdef ARCH_64
 #define ERTS_ALLOC_ALIGN_BYTES 16
@@ -1023,23 +1011,20 @@ void erl_bin_write(unsigned char *, int, int);
 
 
 #ifdef __WIN32__
-
 void call_break_handler(void);
 char* last_error(void);
 char* win32_errorstr(int);
-
-
 #endif
 
 /************************************************************************
  * Find out the native filename encoding of the process (look at locale of 
  * Unix processes and just do UTF16 on windows 
  ************************************************************************/
-#define ERL_FILENAME_UNKNOWN 0
-#define ERL_FILENAME_LATIN1 1
-#define ERL_FILENAME_UTF8 2
-#define ERL_FILENAME_UTF8_MAC 3
-#define ERL_FILENAME_WIN_WCHAR 4
+#define ERL_FILENAME_UNKNOWN   (0)
+#define ERL_FILENAME_LATIN1    (1)
+#define ERL_FILENAME_UTF8      (2)
+#define ERL_FILENAME_UTF8_MAC  (3)
+#define ERL_FILENAME_WIN_WCHAR (4)
 
 int erts_get_native_filename_encoding(void);
 /* The set function is only to be used by erl_init! */
@@ -1049,4 +1034,3 @@ int erts_get_user_requested_filename_encoding(void);
 void erts_init_sys_common_misc(void);
 
 #endif
-

@@ -383,8 +383,6 @@ message_to_string({pattern_match_cov, [Pat, Type]}) ->
 message_to_string({unmatched_return, [Type]}) ->
   io_lib:format("Expression produces a value of type ~s,"
 		" but this value is unmatched\n", [Type]);
-message_to_string({unused_fun, []}) ->
-  io_lib:format("Function will never be called\n", []);
 message_to_string({unused_fun, [F, A]}) ->
   io_lib:format("Function ~w/~w will never be called\n", [F, A]);
 %%----- Warnings for specs and contracts -------------------

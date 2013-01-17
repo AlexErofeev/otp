@@ -1,7 +1,8 @@
+%% -*- coding: utf-8 -*-
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1996-2011. All Rights Reserved.
+%% Copyright Ericsson AB 1996-2012. All Rights Reserved.
 %%
 %% The contents of this file are subject to the Erlang Public License,
 %% Version 1.1, (the "License"); you may not use this file except in
@@ -46,25 +47,28 @@
 %% 173 - 176	{ - ~		punctuation
 %% 177		DEL		control
 %% 200 - 237			control
-%% 240 - 277	NBSP - ¿	punctuation
-%% 300 - 326	À - Ö		uppercase
-%% 327		×		punctuation
-%% 330 - 336	Ø - Þ		uppercase
-%% 337 - 366	ß - ö		lowercase
-%% 367		÷		punctuation
-%% 370 - 377	ø - ÿ		lowercase
+%% 240 - 277	NBSP - Â¿	punctuation
+%% 300 - 326	Ã€ - Ã–		uppercase
+%% 327		Ã—		punctuation
+%% 330 - 336	Ã˜ - Ãž		uppercase
+%% 337 - 366	ÃŸ - Ã¶		lowercase
+%% 367		Ã·		punctuation
+%% 370 - 377	Ã¸ - Ã¿		lowercase
 %%
 %% Many punctuation characters region have special meaning.  Must
-%% watch using × \327, very close to x \170
+%% watch using Ã— \327, very close to x \170
 
 -module(io_lib).
 
 -export([fwrite/2,fread/2,fread/3,format/2]).
 -export([print/1,print/4,indentation/2]).
 
--export([write/1,write/2,write/3,nl/0,format_prompt/1]).
+-export([write/1,write/2,write/3,nl/0,format_prompt/1,format_prompt/2]).
 -export([write_atom/1,write_string/1,write_string/2,write_unicode_string/1,
-	 write_unicode_string/2, write_char/1, write_unicode_char/1]).
+         write_unicode_string/2, write_char/1, write_unicode_char/1]).
+
+-export([write_unicode_string_as_latin1/1, write_unicode_string_as_latin1/2,
+         write_unicode_char_as_latin1/1]).
 
 -export([quote_atom/2, char_list/1, unicode_char_list/1,
 	 deep_char_list/1, deep_unicode_char_list/1,
@@ -75,14 +79,30 @@
 	 collect_line/2, collect_line/3, collect_line/4,
 	 get_until/3, get_until/4]).
 
--export_type([chars/0, continuation/0]).
+-export_type([chars/0, unicode_chars/0, unicode_string/0, continuation/0,
+              fread_error/0]).
 
 %%----------------------------------------------------------------------
 
 -type chars() :: [char() | chars()].
+-type unicode_chars() :: [unicode:unicode_char() | unicode_chars()].
+-type unicode_string() :: [unicode:unicode_char()].
 -type depth() :: -1 | non_neg_integer().
 
--opaque continuation() :: {_, _, _, _}.  % XXX: refine
+-opaque continuation() :: {Format :: string(),
+                           Stack :: chars(),
+                           Nchars :: non_neg_integer(),
+                           Results :: [term()]}.
+
+-type fread_error() :: 'atom'
+                     | 'based'
+                     | 'character'
+                     | 'float'
+                     | 'format'
+                     | 'input'
+                     | 'integer'
+                     | 'string'
+                     | 'unsigned'.
 
 %%----------------------------------------------------------------------
 
@@ -104,7 +124,7 @@ fwrite(Format, Args) ->
               | {'more', RestFormat :: string(),
                  Nchars :: non_neg_integer(),
                  InputStack :: chars()}
-              | {'error', What :: term()}.
+              | {'error', What :: fread_error()}.
 
 fread(Chars, Format) ->
     io_lib_fread:fread(Chars, Format).
@@ -117,7 +137,7 @@ fread(Chars, Format) ->
               | {'done', Result, LeftOverChars :: string()},
       Result :: {'ok', InputList :: [term()]}
               | 'eof'
-              | {'error', What :: term()}.
+              | {'error', What :: fread_error()}.
 
 fread(Cont, Chars, Format) ->
     io_lib_fread:fread(Cont, Chars, Format).
@@ -159,27 +179,34 @@ indentation(Chars, Current) ->
 
 
 %% Format an IO-request prompt (handles formatting errors safely).
-%% Atoms, binaries, and iolists can be used as-is, and will be
-%% printed without any additional quotes.
-%% Note that the output is a deep string, and not an iolist (i.e.,
-%% it may be deep, but never contains binaries, due to the "~s").
+%% Atoms, binaries, and iolists (or unicode:charlist()) can be used
+%% as-is, and will be printed without any additional quotes.
 
 -spec format_prompt(term()) -> chars().
 
-format_prompt({format,Format,Args}) ->
-    format_prompt(Format,Args);
-format_prompt(Prompt)
-  when is_list(Prompt); is_atom(Prompt); is_binary(Prompt) ->
-    format_prompt("~ts", [Prompt]);
 format_prompt(Prompt) ->
-    format_prompt("~tp", [Prompt]).
+    format_prompt(Prompt, latin1).
 
-format_prompt(Format, Args) ->
+-spec format_prompt(term(), atom()) -> chars().
+
+format_prompt({format,Format,Args}, _Encoding) ->
+    do_format_prompt(Format, Args);
+format_prompt(Prompt, Encoding)
+  when is_list(Prompt); is_atom(Prompt); is_binary(Prompt) ->
+    do_format_prompt(add_modifier(Encoding, "s"), [Prompt]);
+format_prompt(Prompt, Encoding) ->
+    do_format_prompt(add_modifier(Encoding, "p"), [Prompt]).
+
+do_format_prompt(Format, Args) ->
     case catch io_lib:format(Format, Args) of
 	{'EXIT',_} -> "???";
 	List -> List
     end.
 
+add_modifier(latin1, C) ->
+    "~"++C;
+add_modifier(_, C) ->
+    "~t"++C.
 
 %% write(Term)
 %% write(Term, Depth)
@@ -250,10 +277,10 @@ write_ref(Ref) ->
 write_binary(B, D) when is_integer(D) ->
     [$<,$<,write_binary_body(B, D),$>,$>].
 
-write_binary_body(_B, 1) ->
-    "...";
 write_binary_body(<<>>, _D) ->
     "";
+write_binary_body(_B, 1) ->
+    "...";
 write_binary_body(<<X:8>>, _D) ->
     [integer_to_list(X)];
 write_binary_body(<<X:8,Rest/bitstring>>, D) ->
@@ -291,7 +318,7 @@ quote_atom(Atom, Cs0) ->
 	    case Cs0 of
 		[C|Cs] when C >= $a, C =< $z ->
 		    not name_chars(Cs);
-		[C|Cs] when C >= $ß, C =< $ÿ, C =/= $÷ ->
+		[C|Cs] when C >= $ÃŸ, C =< $Ã¿, C =/= $Ã· ->
 		    not name_chars(Cs);
 		_ -> true
 	    end
@@ -305,9 +332,9 @@ name_chars([C|Cs]) ->
 name_chars([]) -> true.
 
 name_char(C) when C >= $a, C =< $z -> true;
-name_char(C) when C >= $ß, C =< $ÿ, C =/= $÷ -> true;
+name_char(C) when C >= $ÃŸ, C =< $Ã¿, C =/= $Ã· -> true;
 name_char(C) when C >= $A, C =< $Z -> true;
-name_char(C) when C >= $À, C =< $Þ, C =/= $× -> true;
+name_char(C) when C >= $Ã€, C =< $Ãž, C =/= $Ã— -> true;
 name_char(C) when C >= $0, C =< $9 -> true;
 name_char($_) -> true;
 name_char($@) -> true;
@@ -327,11 +354,32 @@ write_string(S) ->
 write_string(S, Q) ->
     [Q|write_string1(latin1, S, Q)].
 
+%%% There are two functions to write Unicode strings:
+%%% - they both escape control characters < 160;
+%%% - write_unicode_string() never escapes characters >= 160;
+%%% - write_unicode_string_as_latin1() also escapes characters >= 255.
+
+-spec write_unicode_string(UnicodeString) -> unicode_string() when
+      UnicodeString :: unicode_string().
+
 write_unicode_string(S) ->
     write_unicode_string(S, $").   %"
 
+-spec write_unicode_string(unicode_string(), char()) -> unicode_string().
+
 write_unicode_string(S, Q) ->
-    [Q|write_string1(unicode, S, Q)].
+    [Q|write_string1(unicode_as_unicode, S, Q)].
+
+-spec write_unicode_string_as_latin1(UnicodeString) -> string() when
+      UnicodeString :: unicode_string().
+
+write_unicode_string_as_latin1(S) ->
+    write_unicode_string_as_latin1(S, $").   %"
+
+-spec write_unicode_string_as_latin1(unicode_string(), char()) -> string().
+
+write_unicode_string_as_latin1(S, Q) ->
+    [Q|write_string1(unicode_as_latin1, S, Q)].
 
 write_string1(_,[], Q) ->
     [Q];
@@ -344,7 +392,11 @@ string_char(_,C, _, Tail) when C >= $\s, C =< $~ ->
     [C|Tail];
 string_char(latin1,C, _, Tail) when C >= $\240, C =< $\377 ->
     [C|Tail];
-string_char(unicode,C, _, Tail) when C >= $\240 ->
+string_char(unicode_as_unicode,C, _, Tail) when C >= $\240 ->
+    [C|Tail];
+string_char(unicode_as_latin1,C, _, Tail) when C >= $\240, C =< $\377 ->
+    [C|Tail];
+string_char(unicode_as_latin1,C, _, Tail) when C >= $\377 ->
     "\\x{"++erlang:integer_to_list(C, 16)++"}"++Tail;
 string_char(_,$\n, _, Tail) -> [$\\,$n|Tail];	%\n = LF
 string_char(_,$\r, _, Tail) -> [$\\,$r|Tail];	%\r = CR
@@ -371,10 +423,22 @@ write_char($\s) -> "$\\s";			%Must special case this.
 write_char(C) when is_integer(C), C >= $\000, C =< $\377 ->
     [$$|string_char(latin1,C, -1, [])].
 
-write_unicode_char(Ch) when Ch =< 255 ->
-    write_char(Ch);
-write_unicode_char(Uni) ->
-    [$$|string_char(unicode,Uni, -1, [])].
+%%% There are two functions to write a Unicode character:
+%%% - they both escape control characters < 160;
+%%% - write_unicode_char() never escapes characters >= 160;
+%%% - write_unicode_char_as_latin1() also escapes characters >= 255.
+
+-spec write_unicode_char(UnicodeChar) -> unicode_string() when
+      UnicodeChar :: unicode:unicode_char().
+
+write_unicode_char(Uni) when is_integer(Uni), Uni >= $\000 ->
+    [$$|string_char(unicode_as_unicode,Uni, -1, [])].
+
+-spec write_unicode_char_as_latin1(UnicodeChar) -> string() when
+      UnicodeChar :: unicode:unicode_char().
+
+write_unicode_char_as_latin1(Uni) when is_integer(Uni), Uni >= $\000 ->
+    [$$|string_char(unicode_as_latin1,Uni, -1, [])].
 
 %% char_list(CharList)
 %% deep_char_list(CharList)
@@ -389,7 +453,8 @@ char_list([C|Cs]) when is_integer(C), C >= $\000, C =< $\377 ->
 char_list([]) -> true;
 char_list(_) -> false.			%Everything else is false
 
--spec unicode_char_list(term()) -> boolean().
+-spec unicode_char_list(Term) -> boolean() when
+      Term :: term().
 
 unicode_char_list([C|Cs]) when is_integer(C), C >= 0, C < 16#D800; 
        is_integer(C), C > 16#DFFF, C < 16#FFFE;
@@ -414,7 +479,8 @@ deep_char_list([], []) -> true;
 deep_char_list(_, _More) ->			%Everything else is false
     false.
 
--spec deep_unicode_char_list(term()) -> boolean().
+-spec deep_unicode_char_list(Term) -> boolean() when
+      Term :: term().
 
 deep_unicode_char_list(Cs) ->
     deep_unicode_char_list(Cs, []).
@@ -459,7 +525,8 @@ printable_list(_) -> false.			%Everything else is false
 %%  Everything that is not a control character and not invalid unicode 
 %%  will be considered printable.
 
--spec printable_unicode_list(term()) -> boolean().
+-spec printable_unicode_list(Term) -> boolean() when
+      Term :: term().
 
 printable_unicode_list([C|Cs]) when is_integer(C), C >= $\040, C =< $\176 ->
     printable_unicode_list(Cs);

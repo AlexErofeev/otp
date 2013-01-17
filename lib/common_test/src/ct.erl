@@ -148,7 +148,7 @@ run(TestDirs) ->
 %%%               {config,CfgFiles} | {userconfig, UserConfig} |
 %%%               {allow_user_terms,Bool} | {logdir,LogDir} |
 %%%               {silent_connections,Conns} | {stylesheet,CSSFile} |
-%%%               {cover,CoverSpecFile} | {step,StepOpts} |
+%%%               {cover,CoverSpecFile} | {cover_stop,Bool} | {step,StepOpts} |
 %%%               {event_handler,EventHandlers} | {include,InclDirs} |
 %%%               {auto_compile,Bool} | {create_priv_dir,CreatePrivDir}  |
 %%%               {multiply_timetraps,M} | {scale_timetraps,Bool} |
@@ -988,8 +988,9 @@ get_testdata(Key) ->
     end.
 
 %%%-----------------------------------------------------------------
-%%% @spec abort_current_testcase(Reason) -> ok | {error,no_testcase_running}
+%%% @spec abort_current_testcase(Reason) -> ok | {error,ErrorReason}
 %%%       Reason = term()
+%%%       ErrorReason = no_testcase_running | parallel_group
 %%%
 %%% @doc <p>When calling this function, the currently executing test case will be aborted.
 %%%      It is the user's responsibility to know for sure which test case is currently

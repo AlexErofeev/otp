@@ -69,8 +69,8 @@
 -define(TRUE, 0).
 -define(FALSE, 1).
 
--define(DEFAULT_SUPPORTED_VERSIONS, [tlsv1, sslv3]). %% Add 'tlsv1.1' in R16
 -define(ALL_SUPPORTED_VERSIONS, ['tlsv1.2', 'tlsv1.1', tlsv1, sslv3]).
+-define(MIN_SUPPORTED_VERSIONS, ['tlsv1.1', tlsv1, sslv3]).
 
 -record(ssl_options, {
 	  versions,   % 'tlsv1.2' | 'tlsv1.1' | tlsv1 | sslv3
@@ -106,7 +106,9 @@
 			  % after which ssl_connection will
                           % go into hibernation
 	  %% This option should only be set to true by inet_tls_dist
-	  erl_dist = false 
+	  erl_dist = false,
+	  next_protocols_advertised = undefined, %% [binary()],
+	  next_protocol_selector = undefined  %% fun([binary()]) -> binary())
 	  }).
 
 -record(socket_options,

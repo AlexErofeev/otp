@@ -94,12 +94,10 @@ value_option(Flag, Default, On, OnVal, Off, OffVal, Opts) ->
 %% the other function collections contain {Function, Arity}.
 -record(lint, {state=start		:: 'start' | 'attribute' | 'function',
                module=[],                       %Module
-               package="",                      %Module package
                extends=[],                      %Extends
                behaviour=[],                    %Behaviour
                exports=gb_sets:empty()	:: gb_set(),	%Exports
                imports=[],                      %Imports
-               mod_imports=dict:new()	:: dict(),	%Module Imports
                compile=[],                      %Compile flags
                records=dict:new()	:: dict(),	%Record definitions
                locals=gb_sets:empty()	:: gb_set(),	%All defined functions (prescanned)
@@ -365,6 +363,12 @@ format_error(callback_wrong_arity) ->
 format_error({imported_predefined_type, Name}) ->
     io_lib:format("referring to built-in type ~w as a remote type; "
 		  "please take out the module name", [Name]);
+format_error({not_exported_opaque, {TypeName, Arity}}) ->
+    io_lib:format("opaque type ~w~s is not exported",
+                  [TypeName, gen_type_paren(Arity)]);
+format_error({underspecified_opaque, {TypeName, Arity}}) ->
+    io_lib:format("opaque type ~w~s is underspecified and therefore meaningless",
+                  [TypeName, gen_type_paren(Arity)]);
 %% --- obsolete? unused? ---
 format_error({format_error, {Fmt, Args}}) ->
     io_lib:format(Fmt, Args);
@@ -533,7 +537,6 @@ start(File, Opts) ->
 	    end,
     #lint{state = start,
           exports = gb_sets:from_list([{module_info,0},{module_info,1}]),
-          mod_imports = dict:from_list([{erlang,erlang}]),
           compile = Opts,
           %% Internal pseudo-functions must appear as defined/reached.
           defined = gb_sets:from_list(pseudolocals()),
@@ -675,8 +678,8 @@ form(Form, #lint{state=State}=St) ->
 
 %% start_state(Form, State) -> State'
 
-start_state({attribute,L,module,{M,Ps}}, St) ->
-    St1 = set_module(M, L, St),
+start_state({attribute,_,module,{M,Ps}}, St0) ->
+    St1 = St0#lint{module=M},
     Arity = length(Ps),
     Ps1 = if is_atom(St1#lint.extends) ->
 		  ['BASE', 'THIS' | Ps];
@@ -687,22 +690,12 @@ start_state({attribute,L,module,{M,Ps}}, St) ->
     St2 = add_instance(Arity, St1),
     St3 = ensure_new(Arity, St2),
     St3#lint{state=attribute, extends=[], global_vt=Vt};
-start_state({attribute,L,module,M}, St) ->
-    St1 = set_module(M, L, St),
+start_state({attribute,_,module,M}, St0) ->
+    St1 = St0#lint{module=M},
     St1#lint{state=attribute, extends=[]};
 start_state(Form, St) ->
     St1 = add_error(element(2, Form), undefined_module, St),
     attribute_state(Form, St1#lint{state=attribute, extends=[]}).
-
-set_module(M, L, St) ->
-    M1 = package_to_string(M),
-    case packages:is_valid(M1) of
-	true ->
-	    St#lint{module=list_to_atom(M1),
-		    package=packages:strip_last(M1)};
-	false ->
-	    add_error(L, {bad_module_name, M1}, St)
-    end.
 
 ensure_new(Arity, St) ->
     case St#lint.new of
@@ -851,7 +844,8 @@ post_traversal_check(Forms, St0) ->
     StC = check_untyped_records(Forms, StB),
     StD = check_on_load(StC),
     StE = check_unused_records(Forms, StD),
-    check_callback_information(StE).
+    StF = check_local_opaque_types(StE),
+    check_callback_information(StF).
 
 %% check_behaviour(State0) -> State
 %% Check that the behaviour attribute is valid.
@@ -1000,9 +994,9 @@ check_imports(Forms, St0) ->
         true ->
             Usage = St0#lint.usage,
             Unused = ordsets:subtract(St0#lint.imports, Usage#usage.imported),
-            Imports = [{{FA,list_to_atom(package_to_string(Mod))},L}
-                       || {attribute,L,import,{Mod,Fs}} <- Forms,
-                          FA <- lists:usort(Fs)],
+            Imports = [{{FA,Mod},L} ||
+		 {attribute,L,import,{Mod,Fs}} <- Forms,
+		 FA <- lists:usort(Fs)],
             Bad = [{FM,L} || FM <- Unused, {FM2,L} <- Imports, FM =:= FM2],
             func_line_warning(unused_import, Bad, St0)
     end.
@@ -1215,73 +1209,46 @@ export_type(Line, ETs, #lint{usage = Usage, exp_types = ETs0} = St0) ->
 -spec import(line(), import(), lint_state()) -> lint_state().
 
 import(Line, {Mod,Fs}, St) ->
-    Mod1 = package_to_string(Mod),
-    case packages:is_valid(Mod1) of
-        true ->
-            Mfs = ordsets:from_list(Fs),
-            case check_imports(Line, Mfs, St#lint.imports) of
-                [] ->
-                    St#lint{imports=add_imports(list_to_atom(Mod1), Mfs,
-                                                St#lint.imports)};
-                Efs ->
-		    {Err, St1} =
-			foldl(fun ({bif,{F,A},_}, {Err,St0}) ->
-				      %% BifClash - import directive
-				      Warn = is_warn_enabled(bif_clash, St0)
-					  and (not bif_clash_specifically_disabled(St0,{F,A})),
-				      AutoImpSup = is_autoimport_suppressed(St0#lint.no_auto,{F,A}),
-				      OldBif = erl_internal:old_bif(F,A),
-				      {Err,if
-					       Warn and (not AutoImpSup) and OldBif ->
-						   add_error
-						     (Line,
-						      {redefine_old_bif_import, {F,A}},
-						      St0);
-					       Warn and (not AutoImpSup) ->
-						   add_warning
-						     (Line,
-						      {redefine_bif_import, {F,A}},
-						      St0);
-					       true ->
-						   St0
-					   end};
-				  (Ef, {_Err,St0}) ->
-				      {true,add_error(Line,
-						      {redefine_import,Ef},
-						      St0)}
-                          end,
-                          {false,St}, Efs),
-		    if
-			not Err ->
-			    St1#lint{imports=
-				     add_imports(list_to_atom(Mod1), Mfs,
+    Mfs = ordsets:from_list(Fs),
+    case check_imports(Line, Mfs, St#lint.imports) of
+	[] ->
+	    St#lint{imports=add_imports(Mod, Mfs,
+					St#lint.imports)};
+	Efs ->
+	    {Err, St1} =
+		foldl(fun ({bif,{F,A},_}, {Err,St0}) ->
+			      %% BifClash - import directive
+			      Warn = is_warn_enabled(bif_clash, St0) andalso
+				  (not bif_clash_specifically_disabled(St0,{F,A})),
+			      AutoImpSup = is_autoimport_suppressed(St0#lint.no_auto,{F,A}),
+			      OldBif = erl_internal:old_bif(F,A),
+			      {Err,if
+				       Warn and (not AutoImpSup) and OldBif ->
+					   add_error
+					     (Line,
+					      {redefine_old_bif_import, {F,A}},
+					      St0);
+				       Warn and (not AutoImpSup) ->
+					   add_warning
+					     (Line,
+					      {redefine_bif_import, {F,A}},
+					      St0);
+				       true ->
+					   St0
+				   end};
+			  (Ef, {_Err,St0}) ->
+			      {true,add_error(Line,
+					      {redefine_import,Ef},
+					      St0)}
+		      end,
+		      {false,St}, Efs),
+	    if
+		not Err ->
+		    St1#lint{imports=add_imports(Mod, Mfs,
 						 St#lint.imports)};
-			true ->
-			    St1
-		    end
-            end;
-        false ->
-            add_error(Line, {bad_module_name, Mod1}, St)
-    end;
-import(Line, Mod, St) ->
-    Mod1 = package_to_string(Mod),
-    case packages:is_valid(Mod1) of
-        true ->
-            Key = list_to_atom(packages:last(Mod1)),
-            Imps = St#lint.mod_imports,
-%%%         case dict:is_key(Key, Imps) of
-%%%             true ->
-%%%                 M = packages:last(Mod1),
-%%%                 P = packages:strip_last(Mod1),
-%%%                 add_error(Line, {redefine_mod_import, M, P}, St);
-%%%             false ->
-%%%                 St#lint{mod_imports =
-%%%                         dict:store(Key, list_to_atom(Mod1), Imps)}
-%%%         end;
-            St#lint{mod_imports = dict:store(Key, list_to_atom(Mod1),
-                                             Imps)};
-        false ->
-            add_error(Line, {bad_module_name, Mod1}, St)
+		true ->
+		    St1
+	    end
     end.
 
 check_imports(_Line, Fs, Is) ->
@@ -1456,13 +1423,6 @@ pattern({record_index,Line,Name,Field}, _Vt, _Old, _Bvt, St) ->
                              pattern_field(Field, Name, Dfs, St1)
                      end),
     {Vt1,[],St1};
-pattern({record_field,Line,_,_}=M, _Vt, _Old, _Bvt, St0) ->
-    case expand_package(M, St0) of
-        {error, St1} ->
-            {[],[],add_error(Line, illegal_expr, St1)};
-        {_, St1} ->
-            {[],[],St1}
-    end;
 pattern({record,Line,Name,Pfs}, Vt, Old, Bvt, St) ->
     case dict:find(Name, St#lint.records) of
         {ok,{_Line,Fields}} ->
@@ -1844,13 +1804,6 @@ gexpr({tuple,_Line,Es}, Vt, St) ->
 gexpr({record_index,Line,Name,Field}, _Vt, St) ->
     check_record(Line, Name, St,
                  fun (Dfs, St1) -> record_field(Field, Name, Dfs, St1) end );
-gexpr({record_field,Line,_,_}=M, _Vt, St0) ->
-    case expand_package(M, St0) of
-        {error, St1} ->
-            {[],add_error(Line, illegal_expr, St1)};
-        {_, St1} ->
-            {[], St1}
-    end;
 gexpr({record_field,Line,Rec,Name,Field}, Vt, St0) ->
     {Rvt,St1} = gexpr(Rec, Vt, St0),
     {Fvt,St2} = check_record(Line, Name, St1,
@@ -1916,9 +1869,6 @@ gexpr({call,Line,{remote,_Lr,{atom,_Lm,erlang},{atom,_Lf,F}},As}, Vt, St0) ->
         true -> {Asvt,St1};
         false -> {Asvt,add_error(Line, illegal_guard_expr, St1)}
     end;
-gexpr({call,L,{tuple,Lt,[{atom,Lm,erlang},{atom,Lf,F}]},As}, Vt, St0) ->
-    St = add_warning(L, deprecated_tuple_fun, St0),
-    gexpr({call,L,{remote,Lt,{atom,Lm,erlang},{atom,Lf,F}},As}, Vt, St);
 gexpr({op,Line,Op,A}, Vt, St0) ->
     {Avt,St1} = gexpr(A, Vt, St0),
     case is_gexpr_op(Op, 1) of
@@ -1992,8 +1942,6 @@ is_gexpr({tuple,_L,Es}, RDs) -> is_gexpr_list(Es, RDs);
 %%    is_gexpr_list(Es, RDs);
 is_gexpr({record_index,_L,_Name,Field}, RDs) ->
     is_gexpr(Field, RDs);
-is_gexpr({record_field,_L,_,_}=M, _RDs) ->
-    erl_parse:package_segments(M) =/= error;
 is_gexpr({record_field,_L,Rec,_Name,Field}, RDs) ->
     is_gexpr_list([Rec,Field], RDs);
 is_gexpr({record,L,Name,Inits}, RDs) ->
@@ -2082,13 +2030,6 @@ expr({record,Line,Name,Inits}, Vt, St) ->
                  fun (Dfs, St1) ->
                          init_fields(Inits, Line, Name, Dfs, Vt, St1)
                  end);
-expr({record_field,Line,_,_}=M, _Vt, St0) ->
-    case expand_package(M, St0) of
-        {error, St1} ->
-            {[],add_error(Line, illegal_expr, St1)};
-        {_, St1} ->
-            {[], St1}
-    end;
 expr({record_field,Line,Rec,Name,Field}, Vt, St0) ->
     {Rvt,St1} = record_expr(Line, Rec, Vt, St0),
     {Fvt,St2} = check_record(Line, Name, St1,
@@ -2159,20 +2100,14 @@ expr({call,Line,{remote,_Lr,{atom,_Lm,erlang},{atom,Lf,is_record}},[E,A]},
     expr({call,Line,{atom,Lf,is_record},[E,A]}, Vt, St0);
 expr({call,L,{tuple,Lt,[{atom,Lm,erlang},{atom,Lf,is_record}]},As}, Vt, St) ->
     expr({call,L,{remote,Lt,{atom,Lm,erlang},{atom,Lf,is_record}},As}, Vt, St);
+expr({call,Line,{remote,_Lr,{atom,_Lm,M},{atom,Lf,F}},As}, Vt, St0) ->
+    St1 = keyword_warning(Lf, F, St0),
+    St2 = check_remote_function(Line, M, F, As, St1),
+    expr_list(As, Vt, St2);
 expr({call,Line,{remote,_Lr,M,F},As}, Vt, St0) ->
-    case expand_package(M, St0) of
-        {error, _} ->
-            expr_list([M,F|As], Vt, St0);
-        {{atom,_La,M1}, St1} ->
-            case F of
-                {atom,Lf,F1} ->
-                    St2 = keyword_warning(Lf, F1, St1),
-                    St3 = check_remote_function(Line, M1, F1, As, St2),
-                    expr_list(As, Vt, St3);
-                _ ->
-                    expr_list([F|As], Vt, St1)
-            end
-    end;
+    St1 = keyword_warning(Line, M, St0),
+    St2 = keyword_warning(Line, F, St1),
+    expr_list([M,F|As], Vt, St2);
 expr({call,Line,{atom,La,F},As}, Vt, St0) ->
     St1 = keyword_warning(La, F, St0),
     {Asvt,St2} = expr_list(As, Vt, St1),
@@ -2227,13 +2162,6 @@ expr({call,Line,{atom,La,F},As}, Vt, St0) ->
 				  end
                           end
                   end}
-    end;
-expr({call,Line,{record_field,_,_,_}=F,As}, Vt, St0) ->
-    case expand_package(F, St0) of
-        {error, _} ->
-	    expr_list([F|As], Vt, St0);
-        {A, St1} ->
-	    expr({call,Line,A,As}, Vt, St1)
     end;
 expr({call,Line,F,As}, Vt, St0) ->
     St = warn_invalid_call(Line,F,St0),
@@ -2557,15 +2485,24 @@ find_field(_F, []) -> error.
 %%    Attr :: 'type' | 'opaque'
 %% Checks that a type definition is valid.
 
+-record(typeinfo, {attr, line}).
+
 type_def(_Attr, _Line, {record, _RecName}, Fields, [], St0) ->
     %% The record field names and such are checked in the record format.
     %% We only need to check the types.
     Types = [T || {typed_record_field, _, T} <- Fields],
     check_type({type, -1, product, Types}, St0);
-type_def(_Attr, Line, TypeName, ProtoType, Args, St0) ->
+type_def(Attr, Line, TypeName, ProtoType, Args, St0) ->
     TypeDefs = St0#lint.types,
     Arity = length(Args),
     TypePair = {TypeName, Arity},
+    Info = #typeinfo{attr = Attr, line = Line},
+    StoreType =
+        fun(St) ->
+                NewDefs = dict:store(TypePair, Info, TypeDefs),
+                CheckType = {type, -1, product, [ProtoType|Args]},
+                check_type(CheckType, St#lint{types=NewDefs})
+        end,
     case (dict:is_key(TypePair, TypeDefs) orelse is_var_arity_type(TypeName)) of
 	true ->
 	    case dict:is_key(TypePair, default_types()) of
@@ -2575,19 +2512,28 @@ type_def(_Attr, Line, TypeName, ProtoType, Args, St0) ->
 			true ->
 			    Warn = {new_builtin_type, TypePair},
 			    St1 = add_warning(Line, Warn, St0),
-			    NewDefs = dict:store(TypePair, Line, TypeDefs),
-			    CheckType = {type, -1, product, [ProtoType|Args]},
-			    check_type(CheckType, St1#lint{types=NewDefs});
+                            StoreType(St1);
 			false ->
 			    add_error(Line, {builtin_type, TypePair}, St0)
 		    end;
 	        false -> add_error(Line, {redefine_type, TypePair}, St0)
 	    end;
 	false ->
-	    NewDefs = dict:store(TypePair, Line, TypeDefs),
-	    CheckType = {type, -1, product, [ProtoType|Args]},
-	    check_type(CheckType, St0#lint{types=NewDefs})
+            St1 = case
+                      Attr =:= opaque andalso
+                      is_underspecified(ProtoType, Arity)
+                  of
+                      true ->
+                          Warn = {underspecified_opaque, TypePair},
+                          add_warning(Line, Warn, St0);
+                      false -> St0
+                  end,
+            StoreType(St1)
     end.
+
+is_underspecified({type,_,term,[]}, 0) -> true;
+is_underspecified({type,_,any,[]}, 0) -> true;
+is_underspecified(_ProtType, _Arity) -> false.
 
 check_type(Types, St) ->
     {SeenVars, St1} = check_type(Types, dict:new(), St),
@@ -2898,7 +2844,7 @@ check_unused_types(Forms, #lint{usage=Usage, types=Ts, exp_types=ExpTs}=St) ->
 		fun(_Type, -1, AccSt) ->
 			%% Default type
 			AccSt;
-		   (Type, FileLine, AccSt) ->
+		   (Type, #typeinfo{line = FileLine}, AccSt) ->
                         case loc(FileLine) of
 			    {FirstFile, _} ->
 				case gb_sets:is_member(Type, UsedTypes) of
@@ -2916,6 +2862,24 @@ check_unused_types(Forms, #lint{usage=Usage, types=Ts, exp_types=ExpTs}=St) ->
 	[] ->
 	    St
     end.
+
+check_local_opaque_types(St) ->
+    #lint{types=Ts, exp_types=ExpTs} = St,
+    FoldFun =
+        fun(_Type, -1, AccSt) ->
+                %% Default type
+                AccSt;
+           (_Type, #typeinfo{attr = type}, AccSt) ->
+                AccSt;
+           (Type, #typeinfo{attr = opaque, line = FileLine}, AccSt) ->
+                case gb_sets:is_element(Type, ExpTs) of
+                    true -> AccSt;
+                    false ->
+                        Warn = {not_exported_opaque,Type},
+                        add_warning(FileLine, Warn, AccSt)
+                end
+        end,
+    dict:fold(FoldFun, St, Ts).
 
 %% icrt_clauses(Clauses, In, ImportVarTable, State) ->
 %%      {NewVts,State}.
@@ -3578,6 +3542,10 @@ extract_sequence(4, [$t, $c | Fmt], Need) ->
     extract_sequence(5, [$c|Fmt], Need);
 extract_sequence(4, [$t, $s | Fmt], Need) ->
     extract_sequence(5, [$s|Fmt], Need);
+extract_sequence(4, [$t, $p | Fmt], Need) ->
+    extract_sequence(5, [$p|Fmt], Need);
+extract_sequence(4, [$t, $P | Fmt], Need) ->
+    extract_sequence(5, [$P|Fmt], Need);
 extract_sequence(4, [$t, C | _Fmt], _Need) ->
     {error,"invalid control ~t" ++ [C]};
 extract_sequence(4, Fmt, Need) ->
@@ -3613,49 +3581,6 @@ control_type($#, Need) -> [term|Need];
 control_type($n, Need) -> Need;
 control_type($i, Need) -> [term|Need];
 control_type(_C, _Need) -> error.
-
-%% In syntax trees, module/package names are atoms or lists of atoms.
-
-package_to_string(A) when is_atom(A) -> atom_to_list(A);
-package_to_string(L) when is_list(L) -> packages:concat(L).
-
-expand_package({atom,L,A} = M, St0) ->
-    St1 = keyword_warning(L, A, St0),
-    case dict:find(A, St1#lint.mod_imports) of
-        {ok, A1} ->
-            {{atom,L,A1}, St1};
-        error ->
-            Name = atom_to_list(A),
-            case packages:is_valid(Name) of
-                true ->
-                    case packages:is_segmented(Name) of
-                        true ->
-                            {M, St1};
-                        false ->
-                            M1 = packages:concat(St1#lint.package,
-                                                 Name),
-                            {{atom,L,list_to_atom(M1)}, St1}
-                    end;
-                false ->
-                    St2 = add_error(L, {bad_module_name, Name}, St1),
-                    {error, St2}
-            end
-    end;
-expand_package(M, St0) ->
-    L = element(2, M),
-    case erl_parse:package_segments(M) of
-        error ->
-            {error, St0};
-        M1 ->
-            Name = package_to_string(M1),
-            case packages:is_valid(Name) of
-                true ->
-                    {{atom,L,list_to_atom(Name)}, St0};
-                false ->
-                    St1 = add_error(L, {bad_module_name, Name}, St0),
-                    {error, St1}
-            end
-    end.
 
 
 %% Prebuild set of local functions (to override auto-import)

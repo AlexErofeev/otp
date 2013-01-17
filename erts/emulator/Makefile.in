@@ -61,7 +61,7 @@ else
 ifeq ($(TYPE),purify)
 PURIFY = purify $(PURIFY_BUILD_OPTIONS)
 TYPEMARKER = .purify
-TYPE_FLAGS = $(DEBUG_CFLAGS) -DPURIFY -DNO_JUMP_TABLE -DERTS_MSEG_FAKE_SEGMENTS
+TYPE_FLAGS = $(DEBUG_CFLAGS) -DPURIFY -DNO_JUMP_TABLE
 ENABLE_ALLOC_TYPE_VARS += purify
 else
 
@@ -92,7 +92,7 @@ else
 ifeq ($(TYPE),valgrind)
 PURIFY = 
 TYPEMARKER = .valgrind
-TYPE_FLAGS = $(DEBUG_CFLAGS) -DVALGRIND -DNO_JUMP_TABLE -DERTS_MSEG_FAKE_SEGMENTS
+TYPE_FLAGS = $(DEBUG_CFLAGS) -DVALGRIND -DNO_JUMP_TABLE
 ENABLE_ALLOC_TYPE_VARS += valgrind
 else
 
@@ -332,14 +332,10 @@ LIBS += $(THR_LIBS)
 
 ifneq ($(findstring erts_internal_r, $(THR_LIBS)),erts_internal_r)
 
-ifeq ($(findstring vxworks,$(TARGET)),vxworks)
-ERTS_INTERNAL_LIB=erts_internal
-else
 ifneq ($(strip $(THR_LIB_NAME)),)
 ERTS_INTERNAL_LIB=erts_internal_r
 else
 ERTS_INTERNAL_LIB=erts_internal
-endif
 endif
 
 LIBS += -l$(ERTS_INTERNAL_LIB)$(TYPEMARKER)
@@ -463,8 +459,6 @@ _create_dirs := $(shell mkdir -p $(CREATE_DIRS))
 GENERATE =
 HIPE_ASM =
 
-ifeq ($(findstring vxworks,$(TARGET)),vxworks)
-else
 ifdef HIPE_ENABLED
 HIPE_ASM +=	$(TTF_DIR)/hipe_x86_asm.h \
 		$(TTF_DIR)/hipe_amd64_asm.h \
@@ -475,7 +469,6 @@ HIPE_ASM +=	$(TTF_DIR)/hipe_x86_asm.h \
 GENERATE +=	$(HIPE_ASM) \
 		$(TTF_DIR)/hipe_literals.h \
 		$(BINDIR)/hipe_mkliterals$(TF_MARKER)
-endif
 endif
 
 ifdef DTRACE_ENABLED
@@ -567,7 +560,8 @@ $(PRELOAD_SRC): $(ERL_TOP)/erts/preloaded/ebin/otp_ring0.beam \
 			$(ERL_TOP)/erts/preloaded/ebin/zlib.beam \
 			$(ERL_TOP)/erts/preloaded/ebin/prim_zip.beam \
 			$(ERL_TOP)/erts/preloaded/ebin/erl_prim_loader.beam \
-			$(ERL_TOP)/erts/preloaded/ebin/erlang.beam
+			$(ERL_TOP)/erts/preloaded/ebin/erlang.beam \
+			$(ERL_TOP)/erts/preloaded/ebin/erts_internal.beam
 	LANG=C $(PERL) utils/make_preload $(MAKE_PRELOAD_EXTRA) -rc $^ > $@
 else
 PRELOAD_OBJ = $(OBJDIR)/preload.o
@@ -579,7 +573,8 @@ $(PRELOAD_SRC): $(ERL_TOP)/erts/preloaded/ebin/otp_ring0.beam \
 			$(ERL_TOP)/erts/preloaded/ebin/zlib.beam \
 			$(ERL_TOP)/erts/preloaded/ebin/prim_zip.beam \
 			$(ERL_TOP)/erts/preloaded/ebin/erl_prim_loader.beam \
-			$(ERL_TOP)/erts/preloaded/ebin/erlang.beam
+			$(ERL_TOP)/erts/preloaded/ebin/erlang.beam \
+			$(ERL_TOP)/erts/preloaded/ebin/erts_internal.beam
 	LANG=C $(PERL) utils/make_preload -old $^ > $@
 endif
 
@@ -614,11 +609,6 @@ INCLUDES  =  -I$(TTF_DIR) $(COMMON_INCLUDES)
 
 ifdef PERFCTR_PATH
 INCLUDES += -I$(PERFCTR_PATH)/usr.lib -I$(PERFCTR_PATH)/linux/include
-endif
-
-# Need to include etc dir on VxWorks
-ifeq ($(findstring vxworks,$(TARGET)),vxworks)
-INCLUDES += -I$(ERL_TOP)/erts/etc/vxworks
 endif
 
 ifeq ($(TARGET),win32)
@@ -663,12 +653,6 @@ $(OBJDIR)/%.o: drivers/common/%.c
 $(OBJDIR)/%.o: drivers/$(ERLANG_OSTYPE)/%.c
 	$(CC) $(CFLAGS) $(INCLUDES) -Idrivers/common -Idrivers/$(ERLANG_OSTYPE) -I../etc/$(ERLANG_OSTYPE) -c $< -o $@
 
-# VxWorks uses unix drivers too...
-ifeq ($(findstring vxworks,$(TARGET)),vxworks)
-$(OBJDIR)/%.o: drivers/unix/%.c
-	$(CC) $(CFLAGS) $(INCLUDES) -Idrivers/common -c $< -o $@
-endif
-
 # ----------------------------------------------------------------------
 # Specials
 #
@@ -709,7 +693,9 @@ EMU_OBJS = \
 	$(OBJDIR)/beam_emu.o		$(OBJDIR)/beam_opcodes.o \
 	$(OBJDIR)/beam_load.o		$(OBJDIR)/beam_bif_load.o \
 	$(OBJDIR)/beam_debug.o		$(OBJDIR)/beam_bp.o \
-	$(OBJDIR)/beam_catches.o
+	$(OBJDIR)/beam_catches.o \
+	$(OBJDIR)/code_ix.o \
+	$(OBJDIR)/beam_ranges.o
 
 RUN_OBJS = \
 	$(OBJDIR)/erl_pbifs.o		$(OBJDIR)/benchmark.o \
@@ -751,7 +737,8 @@ RUN_OBJS = \
 	$(OBJDIR)/packet_parser.o	$(OBJDIR)/safe_hash.o \
 	$(OBJDIR)/erl_zlib.o		$(OBJDIR)/erl_nif.o \
 	$(OBJDIR)/erl_bif_binary.o      $(OBJDIR)/erl_ao_firstfit_alloc.o \
-	$(OBJDIR)/erl_thr_queue.o	$(OBJDIR)/erl_sched_spec_pre_alloc.o
+	$(OBJDIR)/erl_thr_queue.o	$(OBJDIR)/erl_sched_spec_pre_alloc.o \
+	$(OBJDIR)/erl_ptab.o
 
 ifeq ($(TARGET),win32)
 DRV_OBJS = \
@@ -779,12 +766,8 @@ OS_OBJS = \
 	$(OBJDIR)/gzio.o \
 	$(OBJDIR)/elib_memmove.o
 
-ifeq ($(findstring vxworks,$(TARGET)),vxworks)
-	OS_OBJS += $(OBJDIR)/int64.o 
-else
 	OS_OBJS += $(OBJDIR)/sys_float.o \
                    $(OBJDIR)/sys_time.o
-endif
 DRV_OBJS = \
 	$(OBJDIR)/efile_drv.o \
 	$(OBJDIR)/inet_drv.o \
@@ -792,9 +775,7 @@ DRV_OBJS = \
 	$(OBJDIR)/ram_file_drv.o
 endif
 
-ifneq ($(findstring vxworks,$(TARGET)),vxworks)
 	DRV_OBJS += $(OBJDIR)/ttsl_drv.o
-endif
 
 ifeq ($(ERTS_ENABLE_KERNEL_POLL),yes)
 OS_OBJS += 	$(OBJDIR)/erl_poll.kp.o \
@@ -931,31 +912,6 @@ $(OBJDIR)/hipe_arm.o:           hipe/hipe_arm.c
 
 # end of HiPE section
 ########################################
-
-ifeq ($(findstring vxworks,$(TARGET)),vxworks)
-########################################
-# Extract what we need from libgcc.a
-########################################
-GCCLIBFLAGS=@GCCLIBFLAGS@
-STRIP=@STRIP@
-SYMPREFIX=@SYMPREFIX@
-
-NEEDFUNCTIONS=__divdi3 __moddi3 __udivdi3
-KEEPSYMS=$(NEEDFUNCTIONS:%=-K $(SYMPREFIX)%)
-
-$(OBJDIR)/int64.o: $(TARGET)/int64.c
-	$(CC) -o $(OBJDIR)/int64tmp.o -c $(TARGET)/int64.c
-	$(LD) -o $(OBJDIR)/int64.o $(OBJDIR)/int64tmp.o $(LDFLAGS) $(GCCLIBFLAGS)
-	$(STRIP) $(KEEPSYMS) $(OBJDIR)/int64.o
-
-$(TARGET)/int64.c:
-	echo 'void dummy(void); void dummy(void) {' > $(TARGET)/int64.c
-	for x in $(NEEDFUNCTIONS); do echo 'extern void '$$x'();' \
-		>> $(TARGET)/int64.c; done 
-	for x in $(NEEDFUNCTIONS); do echo $$x'();' >> $(TARGET)/int64.c; done
-	echo '}'  >> $(TARGET)/int64.c 
-
-endif
 
 # ----------------------------------------------------------------------
 # The emulator itself

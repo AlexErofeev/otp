@@ -1,7 +1,7 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2009-2011. All Rights Reserved.
+%% Copyright Ericsson AB 2009-2012. All Rights Reserved.
 %%
 %% The contents of this file are subject to the Erlang Public License,
 %% Version 1.1, (the "License"); you may not use this file except in
@@ -54,9 +54,13 @@ start_slave(Config,_Level) ->
 		ok
 	    end,
 	    DataDir = proplists:get_value(data_dir, Config),
-	    PrivDir = proplists:get_value(priv_dir, Config),
+	    %% We would normally use priv_dir for temporary data,
+	    %% but the pathnames gets too long on Windows.
+	    %% Until the run-time system can support long pathnames,
+	    %% use the data dir.
+	    WorkDir = DataDir,
 
-	    %% PrivDir as well as directory of Test Server suites
+	    %% WorkDir as well as directory of Test Server suites
 	    %% have to be in code path on Test Server node.
 	    [_ | Parts] = lists:reverse(filename:split(DataDir)),
 	    TSDir = filename:join(lists:reverse(Parts)),
@@ -64,7 +68,7 @@ start_slave(Config,_Level) ->
 			      undefined -> [];
 			      Ds -> Ds
 			  end,
-	    PathDirs = [PrivDir,TSDir | AddPathDirs],
+	    PathDirs = [WorkDir,TSDir | AddPathDirs],
 	    [true = rpc:call(Node, code, add_patha, [D]) || D <- PathDirs],
 	    io:format("Dirs added to code path (on ~w):~n",
 		      [Node]),
@@ -73,15 +77,27 @@ start_slave(Config,_Level) ->
 	    true = rpc:call(Node, os, putenv, 
 			    ["TEST_SERVER_FRAMEWORK", "undefined"]),
 
-	    ok = rpc:call(Node, file, set_cwd, [PrivDir]),
-	    [{node,Node} | Config]     
+	    ok = rpc:call(Node, file, set_cwd, [WorkDir]),
+	    [{node,Node}, {work_dir,WorkDir} | Config]
     end.
 
 post_end_per_testcase(_TC, Config, Return, State) ->
     Node = proplists:get_value(node, Config),
-    cover:stop(Node),
+    Cover = test_server:is_cover(),
+    if Cover-> cover:flush(Node);
+       true -> ok
+    end,
+    erlang:monitor_node(Node, true),
     slave:stop(Node),
-
+    receive
+	{nodedown, Node} ->
+	    if Cover -> cover:stop(Node);
+	       true -> ok
+	    end
+    after 5000 ->
+	    erlang:monitor_node(Node, false),
+	    receive {nodedown, Node} -> ok after 0 -> ok end %flush
+    end,
     {Return, State}.
 
 %% Parse an .suite log file

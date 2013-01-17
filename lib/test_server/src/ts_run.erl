@@ -21,7 +21,7 @@
 
 -module(ts_run).
 
--export([run/4]).
+-export([run/4,ct_run_test/2]).
 
 -define(DEFAULT_MAKE_TIMETRAP_MINUTES, 60).
 -define(DEFAULT_UNMAKE_TIMETRAP_MINUTES, 15).
@@ -86,6 +86,24 @@ execute([Hook|Rest], Vars0, Spec0, St0) ->
     end;
 execute([], Vars, Spec, St) ->
     {ok, Vars, Spec, St}.
+
+%% Wrapper to run tests using ct:run_test/1 and handle any errors.
+
+ct_run_test(Dir, CommonTestArgs) ->
+    try
+	ok = file:set_cwd(Dir),
+	case ct:run_test(CommonTestArgs) of
+	    {_,_,_} ->
+		ok;
+	    {error,Error} ->
+		io:format("ERROR: ~P\n", [Error,20]);
+	    Other ->
+		io:format("~P\n", [Other,20])
+	end
+    catch
+	_:Crash ->
+	    io:format("CRASH: ~P\n", [Crash,20])
+    end.
 
 %%
 %% Deletes File from Files when File is on the form .../<SUITE>_data/<file>
@@ -157,7 +175,6 @@ get_config_files() ->
     [TSConfig | case os:type() of
 		    {unix,_} -> ["ts.unix.config"];
 		    {win32,_} -> ["ts.win32.config"];
-		    vxworks -> ["ts.vxworks.config"];
 		    _ -> []
 		end].
 
@@ -231,8 +248,7 @@ make_command(Vars, Spec, State) ->
 	   " -boot start_sasl -sasl errlog_type error",
 	   " -pz \"",Cwd,"\"",
 	   " -ct_test_vars ",TestVars,
-	   " -eval \"file:set_cwd(\\\"",TestDir,"\\\")\" "
-	   " -eval \"ct:run_test(", 
+	   " -eval \"ts_run:ct_run_test(\\\"",TestDir,"\\\", ",
 	   backslashify(lists:flatten(State#state.test_server_args)),")\""
 	   " ",
 	   ExtraArgs],
@@ -329,8 +345,7 @@ start_xterm(Command) ->
 path_separator() ->
     case os:type() of
 	{win32, _} -> ";";
-	{unix, _}  -> ":";
-	vxworks ->    ":"
+	{unix, _}  -> ":"
     end.
 
 
@@ -353,7 +368,7 @@ make_common_test_args(Args0, Options0, _Vars) ->
 		io:format("No cover file found for ~p~n",[App]),
 		[];
 	    {value,{cover,_App,File,_Analyse}} -> 
-		[{cover,to_list(File)}];
+		[{cover,to_list(File)},{cover_stop,false}];
 	    false -> 
 		[]
 	end,
@@ -365,13 +380,7 @@ make_common_test_args(Args0, Options0, _Vars) ->
 		      [{logdir,"../test_server"}]
 	     end,
 
-    TimeTrap = case test_server:timetrap_scale_factor() of
-		   1 ->
-		       [];
-		   Scale ->
-		       [{multiply_timetraps, Scale},
-			{scale_timetraps, true}]
-	       end,
+    TimeTrap = [{scale_timetraps, true}],
 
     {ConfigPath,
      Options} = case {os:getenv("TEST_CONFIG_PATH"),

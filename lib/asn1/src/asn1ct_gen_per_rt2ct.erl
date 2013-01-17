@@ -69,18 +69,6 @@ gen_encode(Erules,Typename,Type) when is_record(Type,type) ->
 	end,
     case asn1ct_gen:type(InnerType) of
 	{constructed,bif} ->
-	    case InnerType of
-		'SET' ->
-		    true;
-		'SEQUENCE' ->
-		    true;
-		_ ->
-		    emit({nl,"'enc_",asn1ct_gen:list2name(Typename),
-			  "'({'",asn1ct_gen:list2name(Typename),
-			  "',Val}",ObjFun,") ->",nl}),
-		    emit({"'enc_",asn1ct_gen:list2name(Typename),
-			  "'(Val",ObjFun,");",nl,nl})
-	    end,
 	    emit({"'enc_",asn1ct_gen:list2name(Typename),"'(Val",ObjFun,
 		  ") ->",nl}),
 	    asn1ct_gen:gen_encode_constructed(Erules,Typename,InnerType,Type);
@@ -176,7 +164,7 @@ gen_encode_prim(Erules,D,DoTag,Value) when is_record(D,type) ->
 			  {asis,NamedNumberList},")"})
 	    end;
 	'NULL' ->
-	    emit({"?RT_PER:encode_null(",Value,")"});
+	    emit("[]");
 	'OBJECT IDENTIFIER' ->
 	    emit({"?RT_PER:encode_object_identifier(",Value,")"});
 	'RELATIVE-OID' ->
@@ -417,48 +405,48 @@ emit_enc_octet_string(_Erules,Constraint,Value) ->
 	    asn1ct_name:new(tmpval),
 	    emit({"  begin",nl}),
 	    emit({"    [",{curr,tmpval},"] = ",Value,",",nl}),
-	    emit({"    [10,8,",{curr,tmpval},"]",nl}),
+	    emit(["    [[10,8],",{curr,tmpval},"]",nl]),
 	    emit("  end");
 	2 ->
 	    asn1ct_name:new(tmpval),
-	    emit({"  begin",nl}),
-	    emit({"    [",{curr,tmpval},",",{next,tmpval},"] = ",
-		  Value,",",nl}),
-	    emit({"    [[10,8,",{curr,tmpval},"],[10,8,",
-		  {next,tmpval},"]]",nl}),
-	    emit("  end"),
-	    asn1ct_name:new(tmpval);
-	Sv when is_integer(Sv),Sv =< 256  ->
+	    emit(["  begin",nl,
+		  "    ",{curr,tmpval}," = ",Value,",",nl,
+		  "    case length(",{curr,tmpval},") of",nl,
+		  "      2 ->",nl,
+		  "        [[45,16,2]|",{curr,tmpval},"];",nl,
+		  "      _ ->",nl,
+		  "        exit({error,{value_out_of_bounds,",
+		  {curr,tmpval},"}})",nl,
+		  "    end",nl,
+		  "  end"]);
+	Sv when is_integer(Sv), Sv < 256  ->
 	    asn1ct_name:new(tmpval),
-	    emit({"  begin",nl}),
-	    emit({"    case length(",Value,") of",nl}),
-	    emit(["      ",{curr,tmpval}," when ",{curr,tmpval}," == ",Sv," ->"]),
-	    emit([" [2,20,",{curr,tmpval},",",Value,"];",nl]),
-	    emit({"      _ -> exit({error,{value_out_of_bounds,",
-		  Value,"}})", nl,"    end",nl}),
-	    emit("  end");
+	    asn1ct_name:new(tmplen),
+	    emit(["  begin",nl,
+		  "    ",{curr,tmpval}," = ",Value,",",nl,
+		  "    case length(",{curr,tmpval},") of",nl,
+		  "      ",Sv,"=",{curr,tmplen}," ->",nl,
+		  "       [20,",{curr,tmplen},"|",{curr,tmpval},"];",nl,
+		  "      _ ->",nl,
+		  "       exit({error,{value_out_of_bounds,",
+		  {curr,tmpval},"}})",nl,
+		  "    end",nl,
+		  "  end"]);
 	Sv when is_integer(Sv),Sv =< 65535  ->
 	    asn1ct_name:new(tmpval),
-	    emit({"  begin",nl}),
-	    emit({"    case length(",Value,") of",nl}),
-	    emit(["      ",{curr,tmpval}," when ",{curr,tmpval}," == ",Sv," ->"]),
-	    emit([" [2,21,",{curr,tmpval},",",Value,"];",nl]),
-	    emit({"      _ -> exit({error,{value_out_of_bounds,",
-		  Value,"}})",nl,"    end",nl}),
-	    emit("  end");
+	    asn1ct_name:new(tmplen),
+	    emit(["  begin",nl,
+		  "    ",{curr,tmpval}," = ",Value,",",nl,
+		  "    case length(",{curr,tmpval},") of",nl,
+		  "      ",Sv,"=",{curr,tmplen}," ->",nl,
+		  "        [<<21,",{curr,tmplen},":16>>|",Value,"];",nl,
+		  "      _ ->",nl,
+		  "        exit({error,{value_out_of_bounds,",
+		  {curr,tmpval},"}})",nl,
+		  "    end",nl,
+		  "  end"]);
 	C ->
 	    emit({"  ?RT_PER:encode_octet_string(",{asis,C},",false,",Value,")",nl})
-    end.
-
-emit_dec_octet_string(Constraint,BytesVar) ->
-    case get_constraint(Constraint,'SizeConstraint') of
-	0 ->
-	    emit({"  {[],",BytesVar,"}",nl});
-	{_,0} ->
-	    emit({"  {[],",BytesVar,"}",nl});
-	C ->
-	    emit({"  ?RT_PER:decode_octet_string(",BytesVar,",",
-		  {asis,C},",false)",nl})
     end.
 
 emit_enc_integer_case(Value) ->
@@ -624,23 +612,6 @@ get_constraint(C,Key) ->
 	    V
     end.
 
-get_constraints(L=[{Key,_}],Key) ->
-    L;
-get_constraints([],_) ->
-    [];
-get_constraints(C,Key) ->
-    {value,L} = keysearch_allwithkey(Key,1,C,[]),
-    L.
-
-keysearch_allwithkey(Key,Ix,C,Acc) ->
-    case lists:keysearch(Key,Ix,C) of
-	false ->
-	    {value,Acc};
-	{value,T} ->
-	    RestC = lists:delete(T,C),
-	    keysearch_allwithkey(Key,Ix,RestC,[T|Acc])
-    end.
-
 %% effective_constraint(Type,C)
 %% Type = atom()
 %% C = [C1,...]
@@ -657,69 +628,9 @@ keysearch_allwithkey(Key,Ix,C,Acc) ->
 effective_constraint(integer,[C={{_,_},_}|_Rest]) -> % extension
     [C]; %% [C|effective_constraint(integer,Rest)]; XXX what is possible ???
 effective_constraint(integer,C) ->
-    SVs = get_constraints(C,'SingleValue'),
-    SV = effective_constr('SingleValue',SVs),
-    VRs = get_constraints(C,'ValueRange'),
-    VR = effective_constr('ValueRange',VRs),
-    CRange = greatest_common_range(SV,VR),
-    pre_encode(integer,CRange);
+    pre_encode(integer, asn1ct_imm:effective_constraint(integer, C));
 effective_constraint(bitstring,C) ->
-    get_constraint(C,'SizeConstraint').
-
-effective_constr(_,[]) ->
-    [];
-effective_constr('SingleValue',List) ->
-    SVList = lists:flatten(lists:map(fun(X)->element(2,X)end,List)),
-    %% Sort and remove duplicates before generating SingleValue or ValueRange
-    %% In case of ValueRange, also check for 'MIN and 'MAX'
-    case lists:usort(SVList) of
-	[N] ->
-	    [{'SingleValue',N}];
-	L when is_list(L) ->
-	    [{'ValueRange',{least_Lb(L),greatest_Ub(L)}}]
-    end;
-effective_constr('ValueRange',List) ->
-    LBs = lists:map(fun({_,{Lb,_}})-> Lb end,List),
-    UBs = lists:map(fun({_,{_,Ub}})-> Ub end,List),
-    Lb = least_Lb(LBs),
-    [{'ValueRange',{Lb,lists:max(UBs)}}].
-
-greatest_common_range([],VR) ->
-    VR;
-greatest_common_range(SV,[]) ->
-    SV;
-greatest_common_range([{_,Int}],[{_,{'MIN',Ub}}]) when is_integer(Int),
-						       Int > Ub ->
-    [{'ValueRange',{'MIN',Int}}];
-greatest_common_range([{_,Int}],[{_,{Lb,Ub}}]) when is_integer(Int),
-						    Int < Lb ->
-    [{'ValueRange',{Int,Ub}}];
-greatest_common_range([{_,Int}],VR=[{_,{_Lb,_Ub}}]) when is_integer(Int) ->
-    VR;
-greatest_common_range([{_,L}],[{_,{Lb,Ub}}]) when is_list(L) ->
-    Min = least_Lb([Lb|L]),
-    Max = greatest_Ub([Ub|L]),
-    [{'ValueRange',{Min,Max}}];
-greatest_common_range([{_,{Lb1,Ub1}}],[{_,{Lb2,Ub2}}]) ->
-    Min = least_Lb([Lb1,Lb2]),
-    Max = greatest_Ub([Ub1,Ub2]),
-    [{'ValueRange',{Min,Max}}].
-    
-
-least_Lb(L) ->
-    case lists:member('MIN',L) of
-	true -> 'MIN';
-	_ -> lists:min(L)
-    end.
-
-greatest_Ub(L) ->
-    case lists:member('MAX',L) of
-	true -> 'MAX';
-	_ -> lists:max(L)
-    end.
-
-
-
+    asn1ct_imm:effective_constraint(bitstring, C).
 
 pre_encode(integer,[]) ->
     [];
@@ -1380,7 +1291,6 @@ gen_objset_dec(ObjSetName,_,['EXTENSIONMARK'],_ClName,_ClFields,
 	       _NthObj) ->
     emit({"'getdec_",ObjSetName,"'(_, _) ->",nl}),
     emit({indent(3),"fun(Attr1, Bytes, _, _) ->",nl}),
-    %%    emit({indent(6),"?RT_PER:decode_open_type(Bytes,[])",nl}),
     emit({indent(6),"{Bytes,Attr1}",nl}),
     emit({indent(3),"end.",nl,nl}),
     ok;
@@ -1396,77 +1306,42 @@ emit_default_getdec(ObjSetName,UniqueName) ->
     emit([indent(2), "fun(C,V,_,_) -> exit({{component,C},{value,V},{unique_name_and_value,",{asis,UniqueName},",ErrV}}) end"]).
 
 
-gen_inlined_dec_funs(Fields,[{typefield,Name,_}|Rest],
-		     ObjSetName,NthObj) ->
-    CurrMod = get(currmod),
-    InternalDefFunName = [NthObj,Name,ObjSetName],
-    case lists:keysearch(Name,1,Fields) of
-	{value,{_,Type}} when is_record(Type,type) ->
-	    emit({indent(3),"fun(Type, Val, _, _) ->",nl,
-		  indent(6),"case Type of",nl}),
-	    N=emit_inner_of_decfun(Type,InternalDefFunName),
-	    gen_inlined_dec_funs1(Fields,Rest,ObjSetName,NthObj+N);
-	{value,{_,Type}} when is_record(Type,typedef) ->
-	    emit({indent(3),"fun(Type, Val, _, _) ->",nl,
-		  indent(6),"case Type of",nl}),
-	    emit({indent(9),{asis,Name}," ->",nl}),
-	    N=emit_inner_of_decfun(Type,InternalDefFunName),
-	    gen_inlined_dec_funs1(Fields,Rest,ObjSetName,NthObj+N);
-	{value,{_,#'Externaltypereference'{module=CurrMod,type=T}}} ->
-	    emit({indent(3),"fun(Type, Val, _, _) ->",nl,
-		  indent(6),"case Type of",nl}),
-	    emit({indent(9),{asis,Name}," ->",nl}),
-	    emit([indent(12),"'dec_",T,"'(Val, telltype)"]),
-	    gen_inlined_dec_funs1(Fields,Rest,ObjSetName,NthObj);
-	{value,{_,#'Externaltypereference'{module=M,type=T}}} ->
-	    emit({indent(3),"fun(Type, Val, _, _) ->",nl,
-		  indent(6),"case Type of",nl}),
-	    emit({indent(9),{asis,Name}," ->",nl}),
-	    emit([indent(12),"'",M,"':'dec_",T,"'(Val, telltype)"]),
-	    gen_inlined_dec_funs1(Fields,Rest,ObjSetName,NthObj);
-	false ->
-	    emit([indent(3),"fun(Type, Val, _, _) ->",nl,
-		  indent(6),"case Type of",nl,
-		  indent(9),{asis,Name}," -> {Val,Type}"]),
-	    gen_inlined_dec_funs1(Fields,Rest,ObjSetName,NthObj)
-    end;
-gen_inlined_dec_funs(Fields,[_|Rest],ObjSetName,NthObj) ->
-    gen_inlined_dec_funs(Fields,Rest,ObjSetName,NthObj);
-gen_inlined_dec_funs(_,[],_,NthObj) ->
+gen_inlined_dec_funs(Fields, List, ObjSetName, NthObj0) ->
+    emit([indent(3),"fun(Type, Val, _, _) ->",nl,
+	  indent(6),"case Type of",nl]),
+    NthObj = gen_inlined_dec_funs1(Fields, List, ObjSetName, "", NthObj0),
+    emit([nl,indent(6),"end",nl,
+	  indent(3),"end"]),
     NthObj.
 
-gen_inlined_dec_funs1(Fields,[{typefield,Name,_}|Rest],
-		     ObjSetName,NthObj) ->
+gen_inlined_dec_funs1(Fields, [{typefield,Name,_}|Rest],
+		      ObjSetName, Sep0, NthObj) ->
     CurrentMod = get(currmod),
     InternalDefFunName = [NthObj,Name,ObjSetName],
-    N=
-    case lists:keysearch(Name,1,Fields) of
-	{value,{_,Type}} when is_record(Type,type) ->
-	    emit({";",nl}),
-	    emit_inner_of_decfun(Type,InternalDefFunName);
-	{value,{_,Type}} when is_record(Type,typedef) ->
-	    emit({";",nl,indent(9),{asis,Name}," ->",nl}),
-	    emit_inner_of_decfun(Type,InternalDefFunName);
-	{value,{_,#'Externaltypereference'{module=CurrentMod,type=T}}} ->
-	    emit([";",nl,indent(9),{asis,Name}," ->",nl]),
-	    emit([indent(12),"'dec_",T,"'(Val,telltype)"]),
-	    0;
-	{value,{_,#'Externaltypereference'{module=M,type=T}}} ->
-	    emit([";",nl,indent(9),{asis,Name}," ->",nl]),
-	    emit([indent(12),"'",M,"':'dec_",T,"'(Val,telltype)"]),
-	    0;
-	false ->
-	    emit([";",nl,
-		  indent(9),{asis,Name}," -> {Val,Type}"]),
-	    0
-    end,
-    gen_inlined_dec_funs1(Fields,Rest,ObjSetName,NthObj+N);
-gen_inlined_dec_funs1(Fields,[_|Rest],ObjSetName,NthObj)->
-    gen_inlined_dec_funs1(Fields,Rest,ObjSetName,NthObj);
-gen_inlined_dec_funs1(_,[],_,NthObj) ->
-    emit({nl,indent(6),"end",nl}),
-    emit({indent(3),"end"}),
-    NthObj.
+    emit(Sep0),
+    Sep = [";",nl],
+    N = case lists:keyfind(Name, 1, Fields) of
+	    {_,#type{}=Type} ->
+		emit_inner_of_decfun(Type, InternalDefFunName);
+	    {_,#typedef{}=Type} ->
+		emit([indent(9),{asis,Name}," ->",nl]),
+		emit_inner_of_decfun(Type, InternalDefFunName);
+	    {_,#'Externaltypereference'{module=CurrentMod,type=T}} ->
+		emit([indent(9),{asis,Name}," ->",nl,
+		      indent(12),"'dec_",T,"'(Val,telltype)"]),
+		0;
+	    {_,#'Externaltypereference'{module=M,type=T}} ->
+		emit([indent(9),{asis,Name}," ->",nl,
+		      indent(12),"'",M,"':'dec_",T,"'(Val,telltype)"]),
+		0;
+	    false ->
+		emit([indent(9),{asis,Name}," -> {Val,Type}"]),
+		0
+	end,
+    gen_inlined_dec_funs1(Fields, Rest, ObjSetName, Sep, NthObj+N);
+gen_inlined_dec_funs1(Fields, [_|Rest], ObjSetName, Sep, NthObj) ->
+    gen_inlined_dec_funs1(Fields, Rest, ObjSetName, Sep, NthObj);
+gen_inlined_dec_funs1(_, [], _, _, NthObj) -> NthObj.
 
 emit_inner_of_decfun(#typedef{name={ExtName,Name},typespec=Type},
 		     InternalDefFunName) ->
@@ -1586,17 +1461,9 @@ gen_dec_prim(Erules,Att,BytesVar) ->
     Constraint = Att#type.constraint,
     case Typename of
 	'INTEGER' ->
-	    EffectiveConstr = effective_constraint(integer,Constraint),
-	    emit_dec_integer(EffectiveConstr,BytesVar);
-% 	    emit({"?RT_PER:decode_integer(",BytesVar,",",
-% 		  {asis,EffectiveConstr},")"});
-	{'INTEGER',NamedNumberList} ->
-	    EffectiveConstr = effective_constraint(integer,Constraint),
-	    emit_dec_integer(EffectiveConstr,BytesVar,NamedNumberList);
-% 	    emit({"?RT_PER:decode_integer(",BytesVar,",",
-% 		  {asis,EffectiveConstr},",",
-% 		  {asis,NamedNumberList},")"});
-
+	    asn1ct_gen_per:gen_dec_prim(Erules, Att, BytesVar);
+	{'INTEGER',_NamedNumberList} ->
+	    asn1ct_gen_per:gen_dec_prim(Erules, Att, BytesVar);
 	'REAL' ->
 	    emit(["?RT_PER:decode_real(",BytesVar,")"]);
 
@@ -1612,8 +1479,7 @@ gen_dec_prim(Erules,Att,BytesVar) ->
 			  {asis,NamedNumberList},")"})
 	    end;
 	'NULL' ->
-	    emit({"?RT_PER:decode_null(",
-		  BytesVar,")"});
+	    emit({"{'NULL',",BytesVar,"}"});
 	'OBJECT IDENTIFIER' ->
 	    emit({"?RT_PER:decode_object_identifier(",
 		  BytesVar,")"});
@@ -1623,23 +1489,13 @@ gen_dec_prim(Erules,Att,BytesVar) ->
 	'ObjectDescriptor' ->
 	    emit({"?RT_PER:decode_ObjectDescriptor(",
 		  BytesVar,")"});
-	{'ENUMERATED',{NamedNumberList1,NamedNumberList2}} ->
-	    NewTup = {list_to_tuple([X||{X,_} <- NamedNumberList1]),
-		      list_to_tuple([X||{X,_} <- NamedNumberList2])},
-	    NewC = [{'ValueRange',{0,size(element(1,NewTup))-1}}],
-	    emit({"?RT_PER:decode_enumerated(",BytesVar,",",
-		  {asis,NewC},",",
-		  {asis,NewTup},")"});
-	{'ENUMERATED',NamedNumberList} ->
-	    NewNNL = [X||{X,_} <- NamedNumberList],
-	    NewC = effective_constraint(integer,
-					[{'ValueRange',{0,length(NewNNL)-1}}]),
-	    emit_dec_enumerated(BytesVar,NewC,NewNNL);
+	{'ENUMERATED',_} ->
+	    asn1ct_gen_per:gen_dec_prim(Erules, Att, BytesVar);
 	'BOOLEAN'->
-	    emit({"?RT_PER:decode_boolean(",BytesVar,")"});
+	    asn1ct_gen_per:gen_dec_prim(Erules, Att, BytesVar);
 
 	'OCTET STRING' ->
-	    emit_dec_octet_string(Constraint,BytesVar);
+	    asn1ct_gen_per:gen_dec_prim(Erules, Att, BytesVar);
 
 	'NumericString' ->
 	    emit_dec_known_multiplier_string('NumericString',
@@ -1686,25 +1542,9 @@ gen_dec_prim(Erules,Att,BytesVar) ->
 	'UTF8String' ->
 	    emit({"?RT_PER:decode_UTF8String(",BytesVar,")"});
 	'ANY' ->
-	    emit(["?RT_PER:decode_open_type(",BytesVar,",", 
-		  {asis,Constraint}, ")"]); 
+	    asn1ct_gen_per:gen_dec_prim(Erules, Att, BytesVar);
 	'ASN1_OPEN_TYPE' ->
-	    case Constraint of
-		[#'Externaltypereference'{type=Tname}] ->
-		    emit(["fun(FBytes) ->",nl,
-			  "   {XTerm,XBytes} = "]),
-		    emit(["?RT_PER:decode_open_type(FBytes,[]),",nl]),
-		    emit(["   {YTerm,_} = dec_",Tname,"(XTerm,mandatory),",nl]),
-		    emit(["   {YTerm,XBytes} end(",BytesVar,")"]);
-		[#type{def=#'Externaltypereference'{type=Tname}}] ->
-		    emit(["fun(FBytes) ->",nl,
-			  "   {XTerm,XBytes} = "]),
-		    emit(["?RT_PER:decode_open_type(FBytes,[]),",nl]),
-		    emit(["   {YTerm,_} = dec_",Tname,"(XTerm,mandatory),",nl]),
-		    emit(["   {YTerm,XBytes} end(",BytesVar,")"]);
-		_ ->
-		    emit(["?RT_PER:decode_open_type(",BytesVar,",[])"])
-	    end;
+	    asn1ct_gen_per:gen_dec_prim(Erules, Att, BytesVar);
 	#'ObjectClassFieldType'{} ->
 		case asn1ct_gen:get_inner(Att#type.def) of
 		    {fixedtypevaluefield,_,InnerType} -> 
@@ -1715,88 +1555,6 @@ gen_dec_prim(Erules,Att,BytesVar) ->
 	Other ->
 	    exit({'cant decode' ,Other})
     end.
-
-
-emit_dec_integer(C,BytesVar,NNL) ->
-    asn1ct_name:new(tmpterm),
-    asn1ct_name:new(buffer),
-    Tmpterm = asn1ct_gen:mk_var(asn1ct_name:curr(tmpterm)),
-    Buffer = asn1ct_gen:mk_var(asn1ct_name:curr(buffer)),
-    emit({" begin {",{curr,tmpterm},",",{curr,buffer},"} = ",nl}),
-    emit_dec_integer(C,BytesVar),
-    emit({",",nl," case ",Tmpterm," of",nl}),
-    lists:map(fun({Name,Int})->emit({"   ",Int," -> {",{asis,Name},",",
-				     Buffer,"};",nl});
-		 (_)-> exit({error,{asn1,{"error in named number list",NNL}}})
-	      end,
-	      NNL),
-    emit({"   _ -> {",Tmpterm,",",Buffer,"}",nl}),
-    emit({" end",nl}), % end of case
-    emit(" end"). % end of begin
-
-emit_dec_integer([{'SingleValue',Int}],BytesVar) when is_integer(Int) -> 
-    emit(["{",Int,",",BytesVar,"}"]);
-emit_dec_integer([{_,{Lb,_Ub},_Range,{BitsOrOctets,N}}],BytesVar) ->
-    GetBorO = 
-	case BitsOrOctets of
-	    bits -> "getbits";
-	    _ -> "getoctets"
-	end,
-    asn1ct_name:new(tmpterm),
-    asn1ct_name:new(tmpremain),
-    emit({"  begin",nl,"    {",{curr,tmpterm},",",{curr,tmpremain},"}=",
-	  "?RT_PER:",GetBorO,"(",BytesVar,",",N,"),",nl}),
-    emit({"    {",{curr,tmpterm},"+",Lb,",",{curr,tmpremain},"}",nl,
-	  "  end"});
-emit_dec_integer([{_,{'MIN',_}}],BytesVar) ->
-    emit({"?RT_PER:decode_unconstrained_number(",BytesVar,")"});
-emit_dec_integer([{_,{Lb,'MAX'}}],BytesVar) ->
-    emit({"?RT_PER:decode_semi_constrained_number(",BytesVar,",",Lb,")"});
-emit_dec_integer([{'ValueRange',VR={Lb,Ub}}],BytesVar) ->
-    Range = Ub-Lb+1,
-     emit({"?RT_PER:decode_constrained_number(",BytesVar,",",
-	   {asis,VR},",",Range,")"});
-emit_dec_integer(C=[{Rc,_}],BytesVar) when is_tuple(Rc) ->
-    emit({"?RT_PER:decode_integer(",BytesVar,",",{asis,C},")"});
-emit_dec_integer(_,BytesVar) ->
-    emit({"?RT_PER:decode_unconstrained_number(",BytesVar,")"}).
-    
-
-emit_dec_enumerated(BytesVar,C,NamedNumberList) ->
-    emit_dec_enumerated_begin(),% emits a begin if component
-    asn1ct_name:new(tmpterm),
-    Tmpterm = asn1ct_gen:mk_var(asn1ct_name:curr(tmpterm)),
-    asn1ct_name:new(tmpremain),
-    Tmpremain = asn1ct_gen:mk_var(asn1ct_name:curr(tmpremain)),
-    emit({"    {",{curr,tmpterm},",",{curr,tmpremain},"} =",nl}),
-    emit_dec_integer(C,BytesVar),
-    emit({",",nl,"    case ",Tmpterm," of "}),
-
-    Cases=lists:flatten(dec_enumerated_cases(NamedNumberList,Tmpremain,0)),
-    emit({Cases++"_->exit({error,{asn1,{decode_enumerated,{",Tmpterm,
-	  ",",{asis,NamedNumberList},"}}}}) end",nl}),
-    emit_dec_enumerated_end().
-	     
-emit_dec_enumerated_begin() ->
-    case get(component_type) of
-	{true,_} ->
-	    emit({"  begin",nl});
-	_ -> ok
-    end.
-
-emit_dec_enumerated_end() ->
-    case get(component_type) of
-	{true,_} ->
-	    emit("  end");
-	_ -> ok
-    end.
-
-
-dec_enumerated_cases([Name|Rest],Tmpremain,No) ->
-    io_lib:format("~w->{~w,~s};",[No,Name,Tmpremain])++
-	dec_enumerated_cases(Rest,Tmpremain,No+1);
-dec_enumerated_cases([],_,_) ->
-    "".
 
 %% For PER the ExtensionAdditionGroup notation has significance for the encoding and decoding
 %% the components within the ExtensionAdditionGroup is treated in a similar way as if they

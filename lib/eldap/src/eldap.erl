@@ -320,7 +320,7 @@ present(Attribute) when is_list(Attribute) ->
 %%% will match entries containing:  'sn: Tornkvist'
 %%%
 substrings(Type, SubStr) when is_list(Type), is_list(SubStr) ->
-    Ss = {'SubstringFilter_substrings',v_substr(SubStr)},
+    Ss = v_substr(SubStr),
     {substrings,#'SubstringFilter'{type = Type,
 				   substrings = Ss}}.
 
@@ -700,20 +700,22 @@ recv_response(S, Data) ->
 		Error     -> throw(Error)
 	    end;
 	{error,Reason} ->
-	    throw({gen_tcp_error, Reason});
-	Error ->
-	    throw(Error)
+	    throw({gen_tcp_error, Reason})
     end.
 
 %%% Sanity check of received packet
 check_tag(Data) ->
-    case asn1rt_ber_bin:decode_tag(l2b(Data)) of
-	{_Tag, Data1, _Rb} ->
-	    case asn1rt_ber_bin:decode_length(l2b(Data1)) of
-		{{_Len, _Data2}, _Rb2} -> ok;
-		_ -> throw({error,decoded_tag_length})
-	    end;
-	_ -> throw({error,decoded_tag})
+    try
+	{_Tag, Data1, _Rb} = asn1rt_ber_bin:decode_tag(l2b(Data)),
+	try
+	    {{_Len, _Data2}, _Rb2} = asn1rt_ber_bin:decode_length(l2b(Data1)),
+	    ok
+	catch
+	    _ -> throw({error,decoded_tag_length})
+	end
+    catch
+	_ ->
+	    throw({error, decoded_tag})
     end.
 
 %%% Check for expected kind of reply

@@ -1,3 +1,4 @@
+%% -*- coding: utf-8 -*-
 %% 
 %% %CopyrightBegin%
 %%
@@ -458,29 +459,16 @@ end_per_testcase2(_Case, Config) ->
 
 
 cases() -> 
-    case ?OSTYPE() of
-	vxworks ->
-	    [
-	     {group, misc}, 
-	     {group, test_v1}, 
-	     {group, test_v2},
-	     {group, test_v1_v2}, 
-	     {group, test_multi_threaded},
-	     {group, mib_storage}, 
-	     {group, tickets1}
-	    ];
-	_Else ->
-	    [
-	     {group, misc}, 
-	     {group, test_v1}, 
-	     {group, test_v2},
-	     {group, test_v1_v2}, 
-	     {group, test_v3},
-	     {group, test_multi_threaded}, 
-	     {group, mib_storage},
-	     {group, tickets1}
-	    ]
-    end.
+    [
+	{group, misc}, 
+	{group, test_v1}, 
+	{group, test_v2},
+	{group, test_v1_v2}, 
+	{group, test_v3},
+	{group, test_multi_threaded}, 
+	{group, mib_storage},
+	{group, tickets1}
+    ].
 
 
 %%%-----------------------------------------------------------------
@@ -1305,21 +1293,16 @@ init_v3(Config) when is_list(Config) ->
     %% and we will be stuck with a bunch of mnesia tables for
     %% the rest of this suite...
     ?DBG("start_agent -> start crypto app",[]),
-    case os:type() of
-	vxworks ->
-	    no_crypto;
-	_ ->
-	    case ?CRYPTO_START() of
-		ok ->
-		    case ?CRYPTO_SUPPORT() of
-			{no, Reason} ->
-			    ?SKIP({unsupported_encryption, Reason});
-			yes ->
-			    ok
-		    end;
-		{error, Reason} ->
-		    ?SKIP({failed_starting_crypto, Reason})
-	    end
+    case ?CRYPTO_START() of
+	ok ->
+	    case ?CRYPTO_SUPPORT() of
+		{no, Reason} ->
+		    ?SKIP({unsupported_encryption, Reason});
+		yes ->
+		    ok
+	    end;
+	{error, Reason} ->
+	    ?SKIP({failed_starting_crypto, Reason})
     end,
     SaNode = ?config(snmp_sa, Config),
     create_tables(SaNode),
@@ -5770,14 +5753,14 @@ otp_4394_config(AgentConfDir, MgrDir, Ip0) ->
     ?line write_community_conf(AgentConfDir, [C1, C2]),
     ?line update_vacm(Vsn, AgentConfDir),
     Ta1 = {"shelob v1", 
-	   [134,138,177,177], 5000, 1500, 3, %% Använd Ip och modda
+	   [134,138,177,177], 5000, 1500, 3, %% Use Ip and modify
 	   "pc1", 
 	   "target_v1", "", 
 	   %% [255,255,255,255,0,0], 
 	   [],
 	   2048},
     Ta2 = {"bifur v1", 
-	   [134,138,177,75], 5000, 1500, 3, %% Använd Ip
+	   [134,138,177,75], 5000, 1500, 3, %% Use Ip
 	   "pc2", 
 	   "target_v1", "", 
 	   %% [255,255,255,255,0,0],

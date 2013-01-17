@@ -36,12 +36,14 @@ suite() -> [{ct_hooks,[ts_install_cth]}].
 
 all() -> 
     test_lib:recompile(?MODULE),
-    [two, test1, fail, float_bin, in_guard, in_catch,
-     nasty_literals, side_effect, opt, otp_7556, float_arith,
-     otp_8054].
+    [{group,p}].
 
 groups() -> 
-    [].
+    [{p,test_lib:parallel(),
+      [two,test1,fail,float_bin,in_guard,in_catch,
+       nasty_literals,side_effect,opt,otp_7556,float_arith,
+       otp_8054]}].
+
 
 init_per_suite(Config) ->
     Config.
@@ -360,6 +362,11 @@ in_catch(Config) when is_list(Config) ->
     ?line <<255>> = small(255, <<1,2,3,4,5,6,7,8,9>>),
     ?line <<1,2>> = small(<<7,8,9,10>>, 258),
     ?line <<>> = small(<<1,2,3,4,5>>, <<7,8,9,10>>),
+
+    <<15,240,0,42>> = small2(255, 42),
+    <<7:20>> = small2(<<1,2,3>>, 7),
+    <<300:12>> = small2(300, <<1,2,3>>),
+    <<>> = small2(<<1>>, <<2>>),
     ok.
 
 small(A, B) ->
@@ -380,6 +387,25 @@ small(A, B) ->
 	ResB -> ok
     end,
     <<ResA/binary,ResB/binary>>.
+
+small2(A, B) ->
+    case begin
+	     case catch <<A:12>> of
+		 {'EXIT',_} -> <<>>;
+		 ResA0 -> ResA0
+	     end
+	 end of
+	ResA -> ok
+    end,
+    case begin
+	     case catch <<B:20>> of
+		 {'EXIT',_} -> <<>>;
+		 ResB0 -> ResB0
+	     end
+	 end of
+	ResB -> ok
+    end,
+    <<ResA/binary-unit:1,ResB/binary-unit:1>>.
 
 nasty_literals(Config) when is_list(Config) ->
     case erlang:system_info(endian) of

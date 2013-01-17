@@ -52,7 +52,12 @@ MODULES= \
 	ct_auto_compile_SUITE \
 	ct_verbosity_SUITE \
 	ct_shell_SUITE \
-	ct_groups_search_SUITE
+	ct_system_error_SUITE \
+	ct_snmp_SUITE \
+	ct_group_leader_SUITE \
+	ct_cover_SUITE \
+	ct_groups_search_SUITE \
+	ct_surefire_SUITE
 
 ERL_FILES= $(MODULES:%=%.erl)
 
@@ -106,7 +111,7 @@ release_spec: opt
 release_tests_spec:
 	$(INSTALL_DIR) "$(RELSYSDIR)"
 	$(INSTALL_DATA) $(ERL_FILES) $(COVERFILE) "$(RELSYSDIR)"
-	$(INSTALL_DATA) common_test.spec "$(RELSYSDIR)"
+	$(INSTALL_DATA) common_test.spec common_test.cover "$(RELSYSDIR)"
 	chmod -R u+w "$(RELSYSDIR)"
 	@tar cf - *_SUITE_data | (cd "$(RELSYSDIR)"; tar xf -)
 

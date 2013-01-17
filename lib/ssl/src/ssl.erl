@@ -28,16 +28,15 @@
 	 cipher_suites/0, cipher_suites/1, suite_definition/1,
 	 close/1, shutdown/2,
 	 connect/3, connect/2, connect/4, connection_info/1,
-	 controlling_process/2, listen/2, pid/1, peername/1, peercert/1,
+	 controlling_process/2, listen/2, peername/1, peercert/1,
 	 recv/2, recv/3, send/2, getopts/2, setopts/2, sockname/1,
 	 versions/0, session_info/1, format_error/1,
-	 renegotiate/1, prf/5, clear_pem_cache/0, random_bytes/1]).
-
--deprecated({pid, 1, next_major_release}).
+	 renegotiate/1, prf/5, clear_pem_cache/0, random_bytes/1, negotiated_next_protocol/1]).
 
 -include("ssl_internal.hrl").
 -include("ssl_record.hrl").
 -include("ssl_cipher.hrl").
+-include("ssl_handshake.hrl").
 
 -include_lib("public_key/include/public_key.hrl"). 
 
@@ -67,7 +66,9 @@
                         {keyfile, path()} | {password, string()} | {cacerts, [Der::binary()]} |
                         {cacertfile, path()} | {dh, Der::binary()} | {dhfile, path()} |
                         {ciphers, ciphers()} | {ssl_imp, ssl_imp()} | {reuse_sessions, boolean()} |
-                        {reuse_session, fun()} | {hibernate_after, integer()|undefined}.
+                        {reuse_session, fun()} | {hibernate_after, integer()|undefined} |
+                        {next_protocols_advertised, list(binary())} |
+                        {client_preferred_next_protocols, binary(), client | server, list(binary())}.
 
 -type verify_type()  :: verify_none | verify_peer.
 -type path()         :: string().
@@ -163,7 +164,7 @@ listen(Port, Options0) ->
 	#config{cb={CbModule, _, _, _},inet_user=Options} = Config,
 	case CbModule:listen(Port, Options) of
 	    {ok, ListenSocket} ->
-		{ok, #sslsocket{pid = {ListenSocket, Config}, fd = new_ssl}};
+		{ok, #sslsocket{pid = {ListenSocket, Config}}};
 	    Err = {error, _} ->
 		Err
 	end
@@ -243,18 +244,20 @@ ssl_accept(Socket, SslOptions, Timeout) when is_port(Socket) ->
 %%
 %% Description: Close an ssl connection
 %%--------------------------------------------------------------------  
+close(#sslsocket{pid = Pid}) when is_pid(Pid) ->
+    ssl_connection:close(Pid);
 close(#sslsocket{pid = {ListenSocket, #config{cb={CbMod,_, _, _}}}}) ->
-    CbMod:close(ListenSocket);
-close(#sslsocket{pid = Pid}) ->
-    ssl_connection:close(Pid).
+    CbMod:close(ListenSocket).
 
 %%--------------------------------------------------------------------
 -spec send(#sslsocket{}, iodata()) -> ok | {error, reason()}.
 %% 
 %% Description: Sends data over the ssl connection
 %%--------------------------------------------------------------------
-send(#sslsocket{pid = Pid}, Data) ->
-    ssl_connection:send(Pid, Data).
+send(#sslsocket{pid = Pid}, Data) when is_pid(Pid) ->
+    ssl_connection:send(Pid, Data);
+send(#sslsocket{pid = {ListenSocket, #config{cb={CbModule, _, _, _}}}}, Data) ->
+    CbModule:send(ListenSocket, Data). %% {error,enotconn}
 
 %%--------------------------------------------------------------------
 -spec recv(#sslsocket{}, integer()) -> {ok, binary()| list()} | {error, reason()}.
@@ -264,8 +267,10 @@ send(#sslsocket{pid = Pid}, Data) ->
 %%--------------------------------------------------------------------
 recv(Socket, Length) ->
     recv(Socket, Length, infinity).
-recv(#sslsocket{pid = Pid, fd = new_ssl}, Length, Timeout) ->
-    ssl_connection:recv(Pid, Length, Timeout).
+recv(#sslsocket{pid = Pid}, Length, Timeout) when is_pid(Pid) ->
+    ssl_connection:recv(Pid, Length, Timeout);
+recv(#sslsocket{pid = {Listen, #config{cb={CbModule, _, _, _}}}}, _,_) when is_port(Listen)->
+    CbModule:recv(Listen, 0). %% {error,enotconn}
 
 %%--------------------------------------------------------------------
 -spec controlling_process(#sslsocket{}, pid()) -> ok | {error, reason()}.
@@ -273,8 +278,12 @@ recv(#sslsocket{pid = Pid, fd = new_ssl}, Length, Timeout) ->
 %% Description: Changes process that receives the messages when active = true
 %% or once. 
 %%--------------------------------------------------------------------
-controlling_process(#sslsocket{pid = Pid}, NewOwner) when is_pid(Pid) ->
-    ssl_connection:new_user(Pid, NewOwner).
+controlling_process(#sslsocket{pid = Pid}, NewOwner) when is_pid(Pid), is_pid(NewOwner) ->
+    ssl_connection:new_user(Pid, NewOwner);
+controlling_process(#sslsocket{pid = {Listen,
+				      #config{cb={CbModule, _, _, _}}}}, NewOwner) when is_port(Listen),
+											is_pid(NewOwner) ->
+    CbModule:controlling_process(Listen, NewOwner).
 
 %%--------------------------------------------------------------------
 -spec connection_info(#sslsocket{}) -> 	{ok, {tls_atom_version(), erl_cipher_suite()}} | 
@@ -282,29 +291,35 @@ controlling_process(#sslsocket{pid = Pid}, NewOwner) when is_pid(Pid) ->
 %%
 %% Description: Returns ssl protocol and cipher used for the connection
 %%--------------------------------------------------------------------
-connection_info(#sslsocket{pid = Pid}) ->
-    ssl_connection:info(Pid).
+connection_info(#sslsocket{pid = Pid}) when is_pid(Pid) ->
+    ssl_connection:info(Pid);
+connection_info(#sslsocket{pid = {Listen, _}}) when is_port(Listen) ->
+    {error, enotconn}.
 
 %%--------------------------------------------------------------------
 -spec peername(#sslsocket{}) -> {ok, {inet:ip_address(), inet:port_number()}} | {error, reason()}.
 %%
 %% Description: same as inet:peername/1.
 %%--------------------------------------------------------------------
-peername(#sslsocket{pid = Pid}) ->
-    ssl_connection:peername(Pid).
+peername(#sslsocket{pid = Pid, fd = Socket}) when is_pid(Pid)->
+    inet:peername(Socket);
+peername(#sslsocket{pid = {ListenSocket, _}}) ->
+    inet:peername(ListenSocket). %% Will return {error, enotconn}
 
 %%--------------------------------------------------------------------
 -spec peercert(#sslsocket{}) ->{ok, DerCert::binary()} | {error, reason()}.
 %%
 %% Description: Returns the peercert.
 %%--------------------------------------------------------------------
-peercert(#sslsocket{pid = Pid}) ->
+peercert(#sslsocket{pid = Pid}) when is_pid(Pid) ->
     case ssl_connection:peer_certificate(Pid) of
 	{ok, undefined} ->
 	    {error, no_peercert};
         Result ->
 	    Result
-    end.
+    end;
+peercert(#sslsocket{pid = {Listen, _}}) when is_port(Listen) ->
+    {error, enotconn}.
 
 %%--------------------------------------------------------------------
 -spec suite_definition(cipher_suite()) -> erl_cipher_suite().
@@ -316,6 +331,14 @@ suite_definition(S) ->
     {KeyExchange, Cipher, Hash}.
 
 %%--------------------------------------------------------------------
+-spec negotiated_next_protocol(#sslsocket{}) -> {ok, binary()} | {error, reason()}.
+%%
+%% Description: Returns the next protocol that has been negotiated. If no
+%% protocol has been negotiated will return {error, next_protocol_not_negotiated}
+%%--------------------------------------------------------------------
+negotiated_next_protocol(#sslsocket{pid = Pid}) ->
+    ssl_connection:negotiated_next_protocol(Pid).
+
 -spec cipher_suites() -> [erl_cipher_suite()].
 -spec cipher_suites(erlang | openssl) -> [erl_cipher_suite()] | [string()].
 			   
@@ -386,8 +409,9 @@ setopts(#sslsocket{}, Options) ->
 %%		      
 %% Description: Same as gen_tcp:shutdown/2
 %%--------------------------------------------------------------------
-shutdown(#sslsocket{pid = {ListenSocket, #config{cb={CbMod,_, _, _}}}}, How) ->
-    CbMod:shutdown(ListenSocket, How);
+shutdown(#sslsocket{pid = {Listen, #config{cb={CbMod,_, _, _}}}},
+	 How) when is_port(Listen) ->
+    CbMod:shutdown(Listen, How);
 shutdown(#sslsocket{pid = Pid}, How) ->
     ssl_connection:shutdown(Pid, How).
 
@@ -396,11 +420,11 @@ shutdown(#sslsocket{pid = Pid}, How) ->
 %%		     
 %% Description: Same as inet:sockname/1
 %%--------------------------------------------------------------------
-sockname(#sslsocket{pid = {ListenSocket, _}}) ->
-    inet:sockname(ListenSocket);
+sockname(#sslsocket{pid = {Listen, _}}) when is_port(Listen) ->
+    inet:sockname(Listen);
 
-sockname(#sslsocket{pid = Pid}) ->
-    ssl_connection:sockname(Pid).
+sockname(#sslsocket{pid = Pid, fd = Socket}) when is_pid(Pid) ->
+    inet:sockname(Socket).
 
 %%---------------------------------------------------------------
 -spec session_info(#sslsocket{}) -> {ok, list()} | {error, reason()}.
@@ -408,12 +432,14 @@ sockname(#sslsocket{pid = Pid}) ->
 %% Description: Returns list of session info currently [{session_id, session_id(),
 %% {cipher_suite, cipher_suite()}]
 %%--------------------------------------------------------------------
-session_info(#sslsocket{pid = Pid, fd = new_ssl}) ->
-    ssl_connection:session_info(Pid).
+session_info(#sslsocket{pid = Pid}) when is_pid(Pid) ->
+    ssl_connection:session_info(Pid);
+session_info(#sslsocket{pid = {Listen,_}}) when is_port(Listen) ->
+    {error, enotconn}.
 
 %%---------------------------------------------------------------
 -spec versions() -> [{ssl_app, string()} | {supported, [tls_atom_version()]} | 
-		      {available, [tls_atom_version()]}]. 
+		     {available, [tls_atom_version()]}].
 %%
 %% Description: Returns a list of relevant versions.
 %%--------------------------------------------------------------------
@@ -429,8 +455,10 @@ versions() ->
 %% 
 %% Description: Initiates a renegotiation.
 %%--------------------------------------------------------------------
-renegotiate(#sslsocket{pid = Pid, fd = new_ssl}) ->
-    ssl_connection:renegotiation(Pid).
+renegotiate(#sslsocket{pid = Pid}) when is_pid(Pid) ->
+    ssl_connection:renegotiation(Pid);
+renegotiate(#sslsocket{pid = {Listen,_}}) when is_port(Listen) ->
+    {error, enotconn}.
 
 %%--------------------------------------------------------------------
 -spec prf(#sslsocket{}, binary() | 'master_secret', binary(),
@@ -439,10 +467,11 @@ renegotiate(#sslsocket{pid = Pid, fd = new_ssl}) ->
 %%
 %% Description: use a ssl sessions TLS PRF to generate key material
 %%--------------------------------------------------------------------
-prf(#sslsocket{pid = Pid, fd = new_ssl},
-    Secret, Label, Seed, WantedLength) ->
-    ssl_connection:prf(Pid, Secret, Label, Seed, WantedLength).
-
+prf(#sslsocket{pid = Pid},
+    Secret, Label, Seed, WantedLength) when is_pid(Pid) ->
+    ssl_connection:prf(Pid, Secret, Label, Seed, WantedLength);
+prf(#sslsocket{pid = {Listen,_}}, _,_,_,_) when is_port(Listen) ->
+    {error, enotconn}.
 
 %%--------------------------------------------------------------------
 -spec clear_pem_cache() -> ok.
@@ -596,7 +625,9 @@ handle_options(Opts0, _Role) ->
       renegotiate_at = handle_option(renegotiate_at, Opts, ?DEFAULT_RENEGOTIATE_AT),
       debug      = handle_option(debug, Opts, []),
       hibernate_after = handle_option(hibernate_after, Opts, undefined),
-      erl_dist = handle_option(erl_dist, Opts, false)
+      erl_dist = handle_option(erl_dist, Opts, false),
+      next_protocols_advertised = handle_option(next_protocols_advertised, Opts, undefined),
+      next_protocol_selector = make_next_protocol_selector(handle_option(client_preferred_next_protocols, Opts, undefined))
      },
 
     CbInfo  = proplists:get_value(cb_info, Opts, {gen_tcp, tcp, tcp_closed, tcp_error}),    
@@ -605,7 +636,8 @@ handle_options(Opts0, _Role) ->
 		  depth, cert, certfile, key, keyfile,
 		  password, cacerts, cacertfile, dh, dhfile, ciphers,
 		  debug, reuse_session, reuse_sessions, ssl_imp,
-		  cb_info, renegotiate_at, secure_renegotiate, hibernate_after, erl_dist],
+		  cb_info, renegotiate_at, secure_renegotiate, hibernate_after, erl_dist, next_protocols_advertised,
+		  client_preferred_next_protocols],
     
     SockOpts = lists:foldl(fun(Key, PropList) -> 
 				   proplists:delete(Key, PropList)
@@ -730,12 +762,64 @@ validate_option(hibernate_after, undefined) ->
     undefined;
 validate_option(hibernate_after, Value) when is_integer(Value), Value >= 0 ->
     Value;
-validate_option(erl_dist,Value) when Value == true; 
+validate_option(erl_dist,Value) when Value == true;
 				     Value == false ->
     Value;
+validate_option(client_preferred_next_protocols = Opt, {Precedence, PreferredProtocols} = Value)
+  when is_list(PreferredProtocols) ->
+    case ssl_record:highest_protocol_version([]) of
+	{3,0} ->
+	    throw({error, {eoptions, {not_supported_in_sslv3, {Opt, Value}}}});
+	_ ->
+	    validate_binary_list(client_preferred_next_protocols, PreferredProtocols),
+	    validate_npn_ordering(Precedence),
+	    {Precedence, PreferredProtocols, ?NO_PROTOCOL}
+    end;
+validate_option(client_preferred_next_protocols = Opt, {Precedence, PreferredProtocols, Default} = Value)
+      when is_list(PreferredProtocols), is_binary(Default),
+           byte_size(Default) > 0, byte_size(Default) < 256 ->
+    case ssl_record:highest_protocol_version([]) of
+	{3,0} ->
+	    throw({error, {eoptions, {not_supported_in_sslv3, {Opt, Value}}}});
+	_ ->
+	    validate_binary_list(client_preferred_next_protocols, PreferredProtocols),
+	    validate_npn_ordering(Precedence),
+	    Value
+    end;
+	
+validate_option(client_preferred_next_protocols, undefined) ->
+    undefined;
+validate_option(next_protocols_advertised = Opt, Value) when is_list(Value) ->
+    case ssl_record:highest_protocol_version([]) of
+	{3,0} ->
+	    throw({error, {eoptions, {not_supported_in_sslv3, {Opt, Value}}}});
+	_ ->
+	    validate_binary_list(next_protocols_advertised, Value),
+	    Value
+    end;
+
+validate_option(next_protocols_advertised, undefined) ->
+    undefined;
 validate_option(Opt, Value) ->
     throw({error, {eoptions, {Opt, Value}}}).
-    
+
+validate_npn_ordering(client) ->
+    ok;
+validate_npn_ordering(server) ->
+    ok;
+validate_npn_ordering(Value) ->
+    throw({error, {eoptions, {client_preferred_next_protocols, {invalid_precedence, Value}}}}).
+
+validate_binary_list(Opt, List) ->
+    lists:foreach(
+        fun(Bin) when is_binary(Bin),
+                      byte_size(Bin) > 0,
+                      byte_size(Bin) < 256 ->
+            ok;
+           (Bin) ->
+            throw({error, {eoptions, {Opt, {invalid_protocol, Bin}}}})
+        end, List).
+
 validate_versions([], Versions) ->
     Versions;
 validate_versions([Version | Rest], Versions) when Version == 'tlsv1.2';
@@ -841,14 +925,31 @@ cipher_suites(Version, Ciphers0)  ->
 
 no_format(Error) ->    
     lists:flatten(io_lib:format("No format string for error: \"~p\" available.", [Error])).
-                                
-%% Only used to remove exit messages from old ssl
-%% First is a nonsense clause to provide some
-%% backward compatibility for orber that uses this
-%% function in a none recommended way, but will
-%% work correctly if a valid pid is returned.
-%% Deprcated to be removed in r16
-pid(#sslsocket{fd = new_ssl}) ->
-     whereis(ssl_connection_sup);
-pid(#sslsocket{pid = Pid}) ->
-     Pid.
+
+detect(_Pred, []) ->
+    undefined;
+detect(Pred, [H|T]) ->
+    case Pred(H) of
+        true ->
+            H;
+        _ ->
+            detect(Pred, T)
+    end.
+
+make_next_protocol_selector(undefined) ->
+    undefined;
+make_next_protocol_selector({client, AllProtocols, DefaultProtocol}) ->
+    fun(AdvertisedProtocols) ->
+        case detect(fun(PreferredProtocol) -> lists:member(PreferredProtocol, AdvertisedProtocols) end, AllProtocols) of
+            undefined -> DefaultProtocol;
+            PreferredProtocol -> PreferredProtocol
+        end
+    end;
+
+make_next_protocol_selector({server, AllProtocols, DefaultProtocol}) ->
+    fun(AdvertisedProtocols) ->
+        case detect(fun(PreferredProtocol) -> lists:member(PreferredProtocol, AllProtocols) end, AdvertisedProtocols) of
+            undefined -> DefaultProtocol;
+            PreferredProtocol -> PreferredProtocol
+        end
+    end.

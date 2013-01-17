@@ -116,8 +116,7 @@ dist_table_alloc(void *dep_tmpl)
     dep->qsize				= 0;
     dep->out_queue.first		= NULL;
     dep->out_queue.last			= NULL;
-    dep->suspended.first		= NULL;
-    dep->suspended.last			= NULL;
+    dep->suspended			= NULL;
 
     dep->finalized_out_queue.first	= NULL;
     dep->finalized_out_queue.last	= NULL;
@@ -769,8 +768,7 @@ void erts_init_node_tables(void)
     erts_this_dist_entry->qsize				= 0;
     erts_this_dist_entry->out_queue.first		= NULL;
     erts_this_dist_entry->out_queue.last		= NULL;
-    erts_this_dist_entry->suspended.first		= NULL;
-    erts_this_dist_entry->suspended.last		= NULL;
+    erts_this_dist_entry->suspended			= NULL;
 
     erts_this_dist_entry->finalized_out_queue.first	= NULL;
     erts_this_dist_entry->finalized_out_queue.last	= NULL;
@@ -1268,7 +1266,7 @@ setup_reference_table(void)
     ErlHeapFragment *hfp;
     DistEntry *dep;
     HashInfo hi;
-    int i;
+    int i, max;
     DeclareTmpHeapNoproc(heap,3);
 
     inserted_bins = NULL;
@@ -1297,22 +1295,24 @@ setup_reference_table(void)
 
     UnUseTmpHeapNoproc(3);
 
+    max = erts_ptab_max(&erts_proc);
     /* Insert all processes */
-    for (i = 0; i < erts_max_processes; i++)
-	if (process_tab[i]) {
+    for (i = 0; i < max; i++) {
+	Process *proc = erts_pix2proc(i);
+	if (proc) {
 	    ErlMessage *msg;
 
 	    /* Insert Heap */
-	    insert_offheap(&(process_tab[i]->off_heap),
+	    insert_offheap(&(proc->off_heap),
 			   HEAP_REF,
-			   process_tab[i]->id);
+			   proc->common.id);
 	    /* Insert message buffers */
-	    for(hfp = process_tab[i]->mbuf; hfp; hfp = hfp->next)
+	    for(hfp = proc->mbuf; hfp; hfp = hfp->next)
 		insert_offheap(&(hfp->off_heap),
 			       HEAP_REF,
-			       process_tab[i]->id);
+			       proc->common.id);
 	    /* Insert msg msg buffers */
-	    for (msg = process_tab[i]->msg.first; msg; msg = msg->next) {
+	    for (msg = proc->msg.first; msg; msg = msg->next) {
 		ErlHeapFragment *heap_frag = NULL;
 		if (msg->data.attached) {
 		    if (is_value(ERL_MESSAGE_TERM(msg)))
@@ -1320,7 +1320,7 @@ setup_reference_table(void)
 		    else {
 			if (msg->data.dist_ext->dep)
 			    insert_dist_entry(msg->data.dist_ext->dep,
-					      HEAP_REF, process_tab[i]->id, 0);
+					      HEAP_REF, proc->common.id, 0);
 			if (is_not_nil(ERL_MESSAGE_TOKEN(msg)))
 			    heap_frag = erts_dist_ext_trailer(msg->data.dist_ext);
 		    }
@@ -1328,10 +1328,10 @@ setup_reference_table(void)
 		if (heap_frag)
 		    insert_offheap(&(heap_frag->off_heap),
 				   HEAP_REF,
-				   process_tab[i]->id);
+				   proc->common.id);
 	    }
 #ifdef ERTS_SMP
-	    for (msg = process_tab[i]->msg_inq.first; msg; msg = msg->next) {
+	    for (msg = proc->msg_inq.first; msg; msg = msg->next) {
 		ErlHeapFragment *heap_frag = NULL;
 		if (msg->data.attached) {
 		    if (is_value(ERL_MESSAGE_TERM(msg)))
@@ -1339,7 +1339,7 @@ setup_reference_table(void)
 		    else {
 			if (msg->data.dist_ext->dep)
 			    insert_dist_entry(msg->data.dist_ext->dep,
-					      HEAP_REF, process_tab[i]->id, 0);
+					      HEAP_REF, proc->common.id, 0);
 			if (is_not_nil(ERL_MESSAGE_TOKEN(msg)))
 			    heap_frag = erts_dist_ext_trailer(msg->data.dist_ext);
 		    }
@@ -1347,42 +1347,55 @@ setup_reference_table(void)
 		if (heap_frag)
 		    insert_offheap(&(heap_frag->off_heap),
 				   HEAP_REF,
-				   process_tab[i]->id);
+				   proc->common.id);
 	    }
 #endif
 	    /* Insert links */
-	    if(process_tab[i]->nlinks)
-		insert_links(process_tab[i]->nlinks, process_tab[i]->id);
-	    if(process_tab[i]->monitors)
-		insert_monitors(process_tab[i]->monitors, process_tab[i]->id);
+	    if (ERTS_P_LINKS(proc))
+		insert_links(ERTS_P_LINKS(proc), proc->common.id);
+	    if (ERTS_P_MONITORS(proc))
+		insert_monitors(ERTS_P_MONITORS(proc), proc->common.id);
 	    /* Insert controller */
 	    {
-		DistEntry *dep = ERTS_PROC_GET_DIST_ENTRY(process_tab[i]);
+		DistEntry *dep = ERTS_PROC_GET_DIST_ENTRY(proc);
 		if (dep)
-		    insert_dist_entry(dep, CTRL_REF, process_tab[i]->id, 0);
+		    insert_dist_entry(dep, CTRL_REF, proc->common.id, 0);
 	    }
 	}
+    }
     
 #ifdef ERTS_SMP
     erts_foreach_sys_msg_in_q(insert_sys_msg);
 #endif
 
     /* Insert all ports */
-    for (i = 0; i < erts_max_ports; i++) {
-	if (erts_port[i].status & ERTS_PORT_SFLGS_DEAD)
+    max = erts_ptab_max(&erts_port);
+    for (i = 0; i < max; i++) {
+	erts_aint32_t state;
+	Port *prt;
+
+	prt = erts_pix2port(i);
+	if (!prt)
+	    continue;
+
+	state = erts_atomic32_read_nob(&prt->state);
+	if (state & ERTS_PORT_SFLGS_DEAD)
 	    continue;
 
 	/* Insert links */
-	if(erts_port[i].nlinks)
-	    insert_links(erts_port[i].nlinks, erts_port[i].id);
+	if (ERTS_P_LINKS(prt))
+	    insert_links(ERTS_P_LINKS(prt), prt->common.id);
+	/* Insert monitors */
+	if (ERTS_P_MONITORS(prt))
+	    insert_monitors(ERTS_P_MONITORS(prt), prt->common.id);
 	/* Insert port data */
-	for(hfp = erts_port[i].bp; hfp; hfp = hfp->next)
-	    insert_offheap(&(hfp->off_heap), HEAP_REF, erts_port[i].id);
+	for(hfp = prt->bp; hfp; hfp = hfp->next)
+	    insert_offheap(&(hfp->off_heap), HEAP_REF, prt->common.id);
 	/* Insert controller */
-	if (erts_port[i].dist_entry)
-	    insert_dist_entry(erts_port[i].dist_entry,
+	if (prt->dist_entry)
+	    insert_dist_entry(prt->dist_entry,
 			      CTRL_REF,
-			      erts_port[i].id,
+			      prt->common.id,
 			      0);
     }
 

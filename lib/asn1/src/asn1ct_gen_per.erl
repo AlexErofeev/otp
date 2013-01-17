@@ -25,6 +25,7 @@
 -include("asn1_records.hrl").
 %-compile(export_all).
 
+-export([gen_dec_imm/2]).
 -export([pgen/4,gen_dec_prim/3,gen_encode_prim/4]).
 -export([gen_obj_code/3,gen_objectset_code/2]).
 -export([gen_decode/2, gen_decode/3]).
@@ -78,18 +79,6 @@ gen_encode(Erules,Typename,Type) when is_record(Type,type) ->
 	end,
     case asn1ct_gen:type(InnerType) of
 	{constructed,bif} ->
-	    case InnerType of
-		'SET' ->
-		    true;
-		'SEQUENCE' ->
-		    true;
-		_ ->
-		    emit({nl,"'enc_",asn1ct_gen:list2name(Typename),
-			  "'({'",asn1ct_gen:list2name(Typename),
-			  "',Val}",ObjFun,") ->",nl}),
-		    emit({"'enc_",asn1ct_gen:list2name(Typename),
-			  "'(Val",ObjFun,");",nl,nl})
-	    end,
 	    emit({"'enc_",asn1ct_gen:list2name(Typename),"'(Val",ObjFun,
 		  ") ->",nl}),
 	    asn1ct_gen:gen_encode_constructed(Erules,Typename,InnerType,Type);
@@ -146,16 +135,18 @@ gen_encode_prim(Erules,D,DoTag,Value) when is_record(D,type) ->
     case D#type.def of
 	'INTEGER' ->
 	    emit({"?RT_PER:encode_integer(", %fel
-		  {asis,effective_constraint(integer,Constraint)},",",Value,")"});
+		  {asis,asn1ct_imm:effective_constraint(integer,Constraint)},
+		  ",",Value,")"});
 	{'INTEGER',NamedNumberList} ->
 	    emit({"?RT_PER:encode_integer(",
-		  {asis,effective_constraint(integer,Constraint)},",",Value,",",
+		  {asis,asn1ct_imm:effective_constraint(integer,Constraint)},
+		  ",",Value,",",
 		  {asis,NamedNumberList},")"});
 	{'ENUMERATED',{Nlist1,Nlist2}} ->
 	    NewList = lists:concat([[{0,X}||{X,_} <- Nlist1],['EXT_MARK'],[{1,X}||{X,_} <- Nlist2]]),
 	    NewC = [{'ValueRange',{0,length(Nlist1)-1}}],
 	    case Erules of
-		uper_bin ->
+		uper ->
 		    emit(["case ",Value," of",nl]);
 		_ ->
 		    emit(["case (case ",Value," of {_,",{curr,enumval},"}-> ",
@@ -168,7 +159,7 @@ gen_encode_prim(Erules,D,DoTag,Value) when is_record(D,type) ->
 	    NewList = [X||{X,_} <- NamedNumberList],
 	    NewC = [{'ValueRange',{0,length(NewList)-1}}],
 	    case Erules of
-		uper_bin ->
+		uper ->
 		    emit(["case ",Value," of",nl]);
 		_ ->
 		    emit(["case (case ",Value," of {_,",{curr,enumval},
@@ -184,7 +175,7 @@ gen_encode_prim(Erules,D,DoTag,Value) when is_record(D,type) ->
 		  {asis,Constraint},",",Value,",",
 		  {asis,NamedNumberList},")"});
 	'NULL' ->
-	    emit({"?RT_PER:encode_null(",Value,")"});
+	    emit("[]");
 	'OBJECT IDENTIFIER' ->
 	    emit({"?RT_PER:encode_object_identifier(",Value,")"});
 	'RELATIVE-OID' ->
@@ -274,7 +265,7 @@ emit_enc_enumerated_cases(Erule, C, [H1,H2|T], Count) ->
     
 
 
-emit_enc_enumerated_case(uper_bin,_C, {asn1_enum,High}, _) ->
+emit_enc_enumerated_case(uper,_C, {asn1_enum,High}, _) ->
     emit([
 	  "{asn1_enum,EnumV} when is_integer(EnumV), EnumV > ",High," -> ",
 	  "[<<1:1>>,?RT_PER:encode_small_number(EnumV)]"]);
@@ -284,117 +275,26 @@ emit_enc_enumerated_case(_Per,_C, {asn1_enum,High}, _) ->
 	  "[{bit,1},?RT_PER:encode_small_number(EnumV)]"]);
 emit_enc_enumerated_case(_Erule, _C, 'EXT_MARK', _Count) ->
     true;
-emit_enc_enumerated_case(uper_bin,_C, {1,EnumName}, Count) ->
+emit_enc_enumerated_case(uper,_C, {1,EnumName}, Count) ->
     emit(["'",EnumName,"' -> [<<1:1>>,?RT_PER:encode_small_number(",Count,")]"]);
 emit_enc_enumerated_case(_Per,_C, {1,EnumName}, Count) ->
     emit(["'",EnumName,"' -> [{bit,1},?RT_PER:encode_small_number(",Count,")]"]);
-emit_enc_enumerated_case(uper_bin,C, {0,EnumName}, Count) ->
+emit_enc_enumerated_case(uper,C, {0,EnumName}, Count) ->
     emit(["'",EnumName,"' -> [<<0:1>>,?RT_PER:encode_integer(",{asis,C},", ",Count,")]"]);
 emit_enc_enumerated_case(_Per,C, {0,EnumName}, Count) ->
     emit(["'",EnumName,"' -> [{bit,0},?RT_PER:encode_integer(",{asis,C},", ",Count,")]"]);
 emit_enc_enumerated_case(_Erule, C, EnumName, Count) ->
     emit(["'",EnumName,"' -> ?RT_PER:encode_integer(",{asis,C},", ",Count,")"]).
 
-%% effective_constraint(Type,C)
-%% Type = atom()
-%% C = [C1,...]
-%% C1 = {'SingleValue',SV} | {'ValueRange',VR} | {atom(),term()}
-%% SV = integer() | [integer(),...]
-%% VR = {Lb,Ub}
-%% Lb = 'MIN' | integer()
-%% Ub = 'MAX' | integer()
-%% Returns a single value if C only has a single value constraint, and no
-%% value range constraints, that constrains to a single value, otherwise 
-%% returns a value range that has the lower bound set to the lowest value 
-%% of all single values and lower bound values in C and the upper bound to
-%% the greatest value.
-effective_constraint(integer,[C={{_,_},_}|_Rest]) -> % extension
-    [C]; %% [C|effective_constraint(integer,Rest)]; XXX what is possible ???
-effective_constraint(integer,C) ->
-    SVs = get_constraints(C,'SingleValue'),
-    SV = effective_constr('SingleValue',SVs),
-    VRs = get_constraints(C,'ValueRange'),
-    VR = effective_constr('ValueRange',VRs),
-    greatest_common_range(SV,VR).
-
-effective_constr(_,[]) ->
-    [];
-effective_constr('SingleValue',List) ->
-    SVList = lists:flatten(lists:map(fun(X)->element(2,X)end,List)),
-    %% Sort and remove duplicates before generating SingleValue or ValueRange
-    %% In case of ValueRange, also check for 'MIN and 'MAX'
-    case lists:usort(SVList) of
-	[N] ->
-	    [{'SingleValue',N}];
-	L when is_list(L) ->
-	    [{'ValueRange',{least_Lb(L),greatest_Ub(L)}}]
-    end;
-effective_constr('ValueRange',List) ->
-    LBs = lists:map(fun({_,{Lb,_}})-> Lb end,List),
-    UBs = lists:map(fun({_,{_,Ub}})-> Ub end,List),
-    Lb = least_Lb(LBs),
-    [{'ValueRange',{Lb,lists:max(UBs)}}].
-
-greatest_common_range([],VR) ->
-    VR;
-greatest_common_range(SV,[]) ->
-    SV;
-greatest_common_range(SV,VR) ->
-    greatest_common_range2(mk_vr(SV),mk_vr(VR)).
-greatest_common_range2({_,Int},{'MIN',Ub}) when is_integer(Int),
-						       Int > Ub ->
-    [{'ValueRange',{'MIN',Int}}];
-greatest_common_range2({_,Int},{Lb,Ub}) when is_integer(Int),
-						    Int < Lb ->
-    [{'ValueRange',{Int,Ub}}];
-greatest_common_range2({_,Int},VR={_Lb,_Ub}) when is_integer(Int) ->
-    [{'ValueRange',VR}];
-greatest_common_range2({_,L},{Lb,Ub}) when is_list(L) ->
-    Min = least_Lb([Lb|L]),
-    Max = greatest_Ub([Ub|L]),
-    [{'ValueRange',{Min,Max}}];
-greatest_common_range2({Lb1,Ub1},{Lb2,Ub2}) ->
-    Min = least_Lb([Lb1,Lb2]),
-    Max = greatest_Ub([Ub1,Ub2]),
-    [{'ValueRange',{Min,Max}}].
-
-mk_vr([{Type,I}]) when is_atom(Type), is_integer(I) ->
-    {I,I};
-mk_vr([{Type,{Lb,Ub}}]) when is_atom(Type) ->
-    {Lb,Ub};
-mk_vr(Other) ->
-    Other.
-
-least_Lb(L) ->
-    case lists:member('MIN',L) of
-	true -> 'MIN';
-	_ -> lists:min(L)
+get_constraint([{Key,V}], Key) ->
+    V;
+get_constraint([], _) ->
+    no;
+get_constraint(C, Key) ->
+    case lists:keyfind(Key, 1, C) of
+	false -> no;
+	{Key,V} -> V
     end.
-
-greatest_Ub(L) ->
-    case lists:member('MAX',L) of
-	true -> 'MAX';
-	_ -> lists:max(L)
-    end.
-
-
-get_constraints(L=[{Key,_}],Key) ->
-    L;
-get_constraints([],_) ->
-    [];
-get_constraints(C,Key) ->
-    {value,L} = keysearch_allwithkey(Key,1,C,[]),
-    L.
-
-keysearch_allwithkey(Key,Ix,C,Acc) ->
-    case lists:keysearch(Key,Ix,C) of
-	false ->
-	    {value,Acc};
-	{value,T} ->
-	    RestC = lists:delete(T,C),
-	    keysearch_allwithkey(Key,Ix,RestC,[T|Acc])
-    end.
-
 
 %% Object code generating for encoding and decoding
 %% ------------------------------------------------
@@ -442,7 +342,7 @@ gen_encode_objectfields(Erule,ClassName,[{typefield,Name,OptOrMand}|Rest],
 	    {false,'OPTIONAL'} ->
 		EmitFuncClause("Val"),
 		case Erule of
-		    uper_bin ->
+		    uper ->
 			emit("   Val");
 		    _ ->
 			emit("   [{octets,Val}]")
@@ -833,7 +733,7 @@ gen_objset_enc(Erule,ObjSetName,_UniqueName,['EXTENSIONMARK'],_ClName,
     emit({"'getenc_",ObjSetName,"'(_, _) ->",nl}),
     emit({indent(3),"fun(_, Val, _) ->",nl}),
     case Erule of
-	uper_bin ->
+	uper ->
 	    emit([indent(6),"Val",nl]);
 	_ ->
 	    emit([indent(6),"[{octets,Val}]",nl])
@@ -883,7 +783,7 @@ gen_inlined_enc_funs(Erule,Fields,[{typefield,Name,_}|Rest],ObjSetName,NthObj) -
 	    emit({indent(9),{asis,Name}," ->",nl}),
 	    emit([indent(12),"'",M,"'",":'enc_",T,"'(Val)"]),
 	    gen_inlined_enc_funs1(Erule,Fields,Rest,ObjSetName,NthObj,[]);
-	false when Erule == uper_bin ->
+	false when Erule =:= uper ->
 	    emit([indent(3),"fun(Type,Val,_) ->",nl,
 		  indent(6),"case Type of",nl,
 		  indent(9),{asis,Name}," -> Val",nl]),
@@ -921,7 +821,7 @@ gen_inlined_enc_funs1(Erule,Fields,[{typefield,Name,_}|Rest],ObjSetName,
 		emit({";",nl,indent(9),{asis,Name}," ->",nl}),
 		emit([indent(12),"'",M,"'",":'enc_",T,"'(Val)"]),
 		{Acc,0};
-	    false when Erule == uper_bin ->
+	    false when Erule =:= uper ->
 		emit([";",nl,
 		      indent(9),{asis,Name}," -> ",nl,
 		      "Val",nl]),
@@ -1031,7 +931,6 @@ gen_objset_dec(ObjSetName,_UniqueName,['EXTENSIONMARK'],_ClName,_ClFields,
 	      _NthObj) ->
     emit({"'getdec_",ObjSetName,"'(_, _) ->",nl}),
     emit({indent(3),"fun(Attr1, Bytes, _,_) ->",nl}),
-%%    emit({indent(6),"?RT_PER:decode_open_type(Bytes,[])",nl}),
     emit({indent(6),"{Bytes,Attr1}",nl}),
     emit({indent(3),"end.",nl,nl}),
     ok;
@@ -1047,76 +946,42 @@ emit_default_getdec(ObjSetName,UniqueName) ->
     emit([indent(2), "fun(C,V,_,_) -> exit({{component,C},{value,V},{unique_name_and_value,",{asis,UniqueName},",ErrV}}) end"]).
 
 
-gen_inlined_dec_funs(Fields,[{typefield,Name,_}|Rest],
-		    ObjSetName,NthObj) ->
-    CurrMod = get(currmod),
-    InternalDefFunName = [NthObj,Name,ObjSetName],
-    case lists:keysearch(Name,1,Fields) of
-	{value,{_,Type}} when is_record(Type,type) ->
-	    emit({indent(3),"fun(Type, Val, _, _) ->",nl,
-		  indent(6),"case Type of",nl}),
-	    N=emit_inner_of_decfun(Type,InternalDefFunName),
-	    gen_inlined_dec_funs1(Fields,Rest,ObjSetName,NthObj+N);
-	{value,{_,Type}} when is_record(Type,typedef) ->
-	    emit({indent(3),"fun(Type, Val, _, _) ->",nl,
-		  indent(6),"case Type of",nl}),
-	    emit({indent(9),{asis,Name}," ->",nl}),
-	    N=emit_inner_of_decfun(Type,InternalDefFunName),
-	    gen_inlined_dec_funs1(Fields,Rest,ObjSetName,NthObj+N);
-	{value,{_,#'Externaltypereference'{module=CurrMod,type=T}}} ->
-	    emit({indent(3),"fun(Type, Val, _, _) ->",nl,
-		  indent(6),"case Type of",nl}),
-	    emit({indent(9),{asis,Name}," ->",nl}),
-	    emit([indent(12),"'dec_",T,"'(Val, telltype)"]),
-	    gen_inlined_dec_funs1(Fields,Rest,ObjSetName,NthObj);
-	{value,{_,#'Externaltypereference'{module=M,type=T}}} ->
-	    emit({indent(3),"fun(Type, Val, _, _) ->",nl,
-		  indent(6),"case Type of",nl}),
-	    emit({indent(9),{asis,Name}," ->",nl}),
-	    emit([indent(12),"'",M,"':'dec_",T,"'(Val, telltype)"]),
-	    gen_inlined_dec_funs1(Fields,Rest,ObjSetName,NthObj);
-	false ->
-	    emit([indent(3),"fun(Type, Val, _, _) ->",nl,
-		  indent(6),"case Type of",nl,
-		  indent(9),{asis,Name}," ->{Val,Type}"]),
-	    gen_inlined_dec_funs1(Fields,Rest,ObjSetName,NthObj)
-    end;
-gen_inlined_dec_funs(Fields,[_|Rest],ObjSetName,NthObj) ->
-    gen_inlined_dec_funs(Fields,Rest,ObjSetName,NthObj);
-gen_inlined_dec_funs(_,[],_,NthObj) ->
+gen_inlined_dec_funs(Fields, List, ObjSetName, NthObj0) ->
+    emit([indent(3),"fun(Type, Val, _, _) ->",nl,
+	  indent(6),"case Type of",nl]),
+    NthObj = gen_inlined_dec_funs1(Fields, List, ObjSetName, "", NthObj0),
+    emit([nl,indent(6),"end",nl,
+	  indent(3),"end"]),
     NthObj.
 
-gen_inlined_dec_funs1(Fields,[{typefield,Name,_}|Rest],
-		      ObjSetName,NthObj) ->
+gen_inlined_dec_funs1(Fields, [{typefield,Name,_}|Rest],
+		      ObjSetName, Sep0, NthObj) ->
     CurrentMod = get(currmod),
     InternalDefFunName = [NthObj,Name,ObjSetName],
-    N=case lists:keysearch(Name,1,Fields) of
-	  {value,{_,Type}} when is_record(Type,type) ->
-	      emit({";",nl}),
-	      emit_inner_of_decfun(Type,InternalDefFunName);
-	  {value,{_,Type}} when is_record(Type,typedef) ->
-	      emit({";",nl,indent(9),{asis,Name}," ->",nl}),
-	      emit_inner_of_decfun(Type,InternalDefFunName);
-	  {value,{_,#'Externaltypereference'{module=CurrentMod,type=T}}} ->
-	      emit([";",nl,indent(9),{asis,Name}," ->",nl]),
-	      emit([indent(12),"'dec_",T,"'(Val,telltype)"]),
-	      0;
-	  {value,{_,#'Externaltypereference'{module=M,type=T}}} ->
-	      emit([";",nl,indent(9),{asis,Name}," ->",nl]),
-	      emit([indent(12),"'",M,"'",":'dec_",T,"'(Val,telltype)"]),
-	      0;
-	  false ->
-	      emit([";",nl,
-		    indent(9),{asis,Name}," ->{Val,Type}"]),
-	      0
-      end,
-    gen_inlined_dec_funs1(Fields,Rest,ObjSetName,NthObj+N);
-gen_inlined_dec_funs1(Fields,[_|Rest],ObjSetName,NthObj)->
-    gen_inlined_dec_funs1(Fields,Rest,ObjSetName,NthObj);
-gen_inlined_dec_funs1(_,[],_,NthObj) ->
-    emit({nl,indent(6),"end",nl}),
-    emit({indent(3),"end"}),
-    NthObj.
+    emit(Sep0),
+    Sep = [";",nl],
+    N = case lists:keyfind(Name, 1, Fields) of
+	    {_,#type{}=Type} ->
+		emit_inner_of_decfun(Type, InternalDefFunName);
+	    {_,#typedef{}=Type} ->
+		emit([indent(9),{asis,Name}," ->",nl]),
+		emit_inner_of_decfun(Type, InternalDefFunName);
+	    {_,#'Externaltypereference'{module=CurrentMod,type=T}} ->
+		emit([indent(9),{asis,Name}," ->",nl,
+		      indent(12),"'dec_",T,"'(Val,telltype)"]),
+		0;
+	    {_,#'Externaltypereference'{module=M,type=T}} ->
+		emit([indent(9),{asis,Name}," ->",nl,
+		      indent(12),"'",M,"':'dec_",T,"'(Val,telltype)"]),
+		0;
+	    false ->
+		emit([indent(9),{asis,Name}," -> {Val,Type}"]),
+		0
+	end,
+    gen_inlined_dec_funs1(Fields, Rest, ObjSetName, Sep, NthObj+N);
+gen_inlined_dec_funs1(Fields, [_|Rest], ObjSetName, Sep, NthObj) ->
+    gen_inlined_dec_funs1(Fields, Rest, ObjSetName, Sep, NthObj);
+gen_inlined_dec_funs1(_, [], _, _, NthObj) -> NthObj.
 
 emit_inner_of_decfun(#typedef{name={ExtName,Name},typespec=Type},
 		     InternalDefFunName) ->
@@ -1228,19 +1093,47 @@ gen_decode_user(Erules,D) when is_record(D,typedef) ->
 	    exit({error,{asn1,{unknown,Other}}})
     end.
 
+gen_dec_imm(Erule, #type{def=Name,constraint=C}) ->
+    Aligned = case Erule of
+		  uper -> false;
+		  per -> true
+	      end,
+    gen_dec_imm_1(Name, C, Aligned).
 
-gen_dec_prim(Erules,Att,BytesVar) ->
-    Typename = Att#type.def,
-    Constraint = Att#type.constraint,
+gen_dec_imm_1('ASN1_OPEN_TYPE', Constraint, Aligned) ->
+    imm_decode_open_type(Constraint, Aligned);
+gen_dec_imm_1('ANY', _Constraint, Aligned) ->
+    imm_decode_open_type([], Aligned);
+gen_dec_imm_1('BOOLEAN', _Constr, _Aligned) ->
+    asn1ct_imm:per_dec_boolean();
+gen_dec_imm_1({'ENUMERATED',{Base,Ext}}, _Constr, Aligned) ->
+    asn1ct_imm:per_dec_enumerated(Base, Ext, Aligned);
+gen_dec_imm_1({'ENUMERATED',NamedNumberList}, _Constr, Aligned) ->
+    asn1ct_imm:per_dec_enumerated(NamedNumberList, Aligned);
+gen_dec_imm_1('INTEGER', Constr, Aligned) ->
+    asn1ct_imm:per_dec_integer(Constr, Aligned);
+gen_dec_imm_1({'INTEGER',NamedNumberList}, Constraint, Aligned) ->
+    asn1ct_imm:per_dec_named_integer(Constraint,
+				     NamedNumberList,
+				     Aligned);
+gen_dec_imm_1('OCTET STRING', Constraint, Aligned) ->
+    SzConstr = get_constraint(Constraint, 'SizeConstraint'),
+    Imm = asn1ct_imm:per_dec_octet_string(SzConstr, Aligned),
+    {convert,binary_to_list,Imm};
+gen_dec_imm_1(_, _, _) -> no.
+
+gen_dec_prim(Erule, Type, BytesVar) ->
+    case gen_dec_imm(Erule, Type) of
+	no ->
+	    gen_dec_prim_1(Erule, Type, BytesVar);
+	Imm ->
+	    asn1ct_imm:dec_code_gen(Imm, BytesVar)
+    end.
+
+gen_dec_prim_1(Erule,
+	       #type{def=Typename,constraint=Constraint}=Att,
+	       BytesVar) ->
     case Typename of
-	'INTEGER' ->
-	    emit({"?RT_PER:decode_integer(",BytesVar,",",
-		  {asis,effective_constraint(integer,Constraint)},")"});
-	{'INTEGER',NamedNumberList} ->
-	    emit({"?RT_PER:decode_integer(",BytesVar,",",
-		  {asis,effective_constraint(integer,Constraint)},",",
-		  {asis,NamedNumberList},")"});
-
 	'REAL' ->
 	    emit({"?RT_PER:decode_real(",BytesVar,")"});
 	
@@ -1256,8 +1149,7 @@ gen_dec_prim(Erules,Att,BytesVar) ->
 			  {asis,NamedNumberList},")"})
 	    end;
 	'NULL' ->
-	    emit({"?RT_PER:decode_null(",
-		  BytesVar,")"});
+	    emit({"{'NULL',",BytesVar,"}"});
 	'OBJECT IDENTIFIER' ->
 	    emit({"?RT_PER:decode_object_identifier(",
 		  BytesVar,")"});
@@ -1267,24 +1159,6 @@ gen_dec_prim(Erules,Att,BytesVar) ->
 	'ObjectDescriptor' ->
 	    emit({"?RT_PER:decode_ObjectDescriptor(",
 		  BytesVar,")"});
-	{'ENUMERATED',{NamedNumberList1,NamedNumberList2}} ->
-	    NewTup = {list_to_tuple([X||{X,_} <- NamedNumberList1]),
-		      list_to_tuple([X||{X,_} <- NamedNumberList2])},
-	    NewC = [{'ValueRange',{0,size(element(1,NewTup))-1}}],
-	    emit({"?RT_PER:decode_enumerated(",BytesVar,",",
-		  {asis,NewC},",",
-		  {asis,NewTup},")"});
-	{'ENUMERATED',NamedNumberList} ->
-	    NewTup = list_to_tuple([X||{X,_} <- NamedNumberList]),
-	    NewC = [{'ValueRange',{0,size(NewTup)-1}}],
-	    emit({"?RT_PER:decode_enumerated(",BytesVar,",",
-		  {asis,NewC},",",
-		  {asis,NewTup},")"});
-	'BOOLEAN'->
-	    emit({"?RT_PER:decode_boolean(",BytesVar,")"});
-	'OCTET STRING' ->
-	    emit({"?RT_PER:decode_octet_string(",BytesVar,",",
-		  {asis,Constraint},")"});
 	'NumericString' ->
 	    emit({"?RT_PER:decode_NumericString(",BytesVar,",",
 		  {asis,Constraint},")"});
@@ -1322,42 +1196,12 @@ gen_dec_prim(Erules,Att,BytesVar) ->
 		  ",",{asis,Constraint},")"});
 	'UTF8String' ->
 	    emit({"?RT_PER:decode_UTF8String(",BytesVar,")"});
-	'ANY' ->
-	    case Erules of
-		per ->
-		    emit(["fun() -> {XTerm,YTermXBytes} = ?RT_PER:decode_open_type(",BytesVar,",",{asis,Constraint}, "), {binary_to_list(XTerm),XBytes} end ()"]);
-		_ ->
-		    emit(["?RT_PER:decode_open_type(",BytesVar,",", 
-			  {asis,Constraint}, ")"])
-	    end;
-	'ASN1_OPEN_TYPE' ->
-	    case Constraint of
-		[#'Externaltypereference'{type=Tname}] ->
-		    emit(["fun(FBytes) ->",nl,
-			  "   {XTerm,XBytes} = "]),
-		    emit(["?RT_PER:decode_open_type(FBytes,[]),",nl]),
-		    emit(["   {YTerm,_} = dec_",Tname,"(XTerm,mandatory),",nl]),
-		    emit(["   {YTerm,XBytes} end(",BytesVar,")"]);
-		[#type{def=#'Externaltypereference'{type=Tname}}] ->
-		    emit(["fun(FBytes) ->",nl,
-			  "   {XTerm,XBytes} = "]),
-		    emit(["?RT_PER:decode_open_type(FBytes,[]),",nl]),
-		    emit(["   {YTerm,_} = dec_",Tname,"(XTerm,mandatory),",nl]),
-		    emit(["   {YTerm,XBytes} end(",BytesVar,")"]);
-		_ ->
-		    case Erules of
-			per ->
-			    emit(["fun() -> {XTerm,XBytes} = ?RT_PER:decode_open_type(",BytesVar,", []), {binary_to_list(XTerm),XBytes} end()"]);
-			_ ->
-			    emit(["?RT_PER:decode_open_type(",BytesVar,",[])"])
-		    end
-	    end;
 	#'ObjectClassFieldType'{} ->
-		case asn1ct_gen:get_inner(Att#type.def) of
+		case asn1ct_gen:get_inner(Typename) of
 		    {fixedtypevaluefield,_,InnerType} -> 
-			gen_dec_prim(Erules,InnerType,BytesVar);
+			gen_dec_prim(Erule, InnerType, BytesVar);
 		    T ->
-			gen_dec_prim(Erules,Att#type{def=T},BytesVar)
+			gen_dec_prim(Erule, Att#type{def=T}, BytesVar)
 		end;
 	Other ->
 	    exit({'cant decode' ,Other})
@@ -1417,3 +1261,22 @@ extaddgroup2sequence([C|T],ExtNum,Acc) ->
     extaddgroup2sequence(T,ExtNum,[C|Acc]);
 extaddgroup2sequence([],_,Acc) ->
     lists:reverse(Acc).
+
+imm_decode_open_type([#'Externaltypereference'{type=Tname}], Aligned) ->
+    imm_dec_open_type_1(Tname, Aligned);
+imm_decode_open_type([#type{def=#'Externaltypereference'{type=Tname}}],
+		     Aligned) ->
+    imm_dec_open_type_1(Tname, Aligned);
+imm_decode_open_type(_, Aligned) ->
+    asn1ct_imm:per_dec_open_type(Aligned).
+
+imm_dec_open_type_1(Type, Aligned) ->
+    D = fun(OpenType, Buf) ->
+		asn1ct_name:new(tmpval),
+		emit(["begin",nl,
+		      "{",{curr,tmpval},",_} = ",
+		      "dec_",Type,"(",OpenType,", mandatory),",nl,
+		      "{",{curr,tmpval},com,Buf,"}",nl,
+		      "end"])
+	end,
+    {call,D,asn1ct_imm:per_dec_open_type(Aligned)}.

@@ -1,7 +1,8 @@
+%% -*- coding: utf-8 -*-
 %%
 %% %CopyrightBegin%
 %% 
-%% Copyright Ericsson AB 1999-2011. All Rights Reserved.
+%% Copyright Ericsson AB 1999-2013. All Rights Reserved.
 %% 
 %% The contents of this file are subject to the Erlang Public License,
 %% Version 1.1, (the "License"); you may not use this file except in
@@ -27,7 +28,8 @@
          otp_6282/1, otp_6354/1, otp_6495/1, otp_6517/1, otp_6502/1,
          manpage/1, otp_6708/1, otp_7084/1, otp_7421/1,
 	 io_lib_collect_line_3_wb/1, cr_whitespace_in_string/1,
-	 io_fread_newlines/1, otp_8989/1, io_lib_fread_literal/1]).
+	 io_fread_newlines/1, otp_8989/1, io_lib_fread_literal/1,
+	 io_lib_print_binary_depth_one/1, otp_10302/1]).
 
 %-define(debug, true).
 
@@ -62,7 +64,8 @@ all() ->
      otp_6282, otp_6354, otp_6495, otp_6517, otp_6502,
      manpage, otp_6708, otp_7084, otp_7421,
      io_lib_collect_line_3_wb, cr_whitespace_in_string,
-     io_fread_newlines, otp_8989, io_lib_fread_literal].
+     io_fread_newlines, otp_8989, io_lib_fread_literal,
+     io_lib_print_binary_depth_one, otp_10302].
 
 groups() -> 
     [].
@@ -892,7 +895,7 @@ otp_6354(Config) when is_list(Config) ->
     ?line "\"\\b\\t\\n\\v\\f\\r\\e\250\"" = 
               p([8,9,10,11,12,13,27,168], 1, 40, -1),
     % ?line "\"\\b\\t\\n\"\n \"\\v\\f\\r\"\n \"\\e\250\"" =
-    ?line "\"\\b\\t\\n\\v\\f\\r\\e�\"" = 
+    ?line "\"\\b\\t\\n\\v\\f\\r\\e짢\"" =
               p([8,9,10,11,12,13,27,168], 1, 10, -1),
     ?line "\"\\b\\t\\n\\v\\f\\r\\e\250\"" = 
               p([8,9,10,11,12,13,27,168], 1, 40, 100),
@@ -2021,3 +2024,55 @@ io_lib_fread_literal(Suite) when is_list(Suite) ->
     ?line {done,{error,{fread,input}},_} = io_lib:fread(C2, eof, " d"),
     ?line {done,{ok,[]},[]} = io_lib:fread(C2, "d\n", " d"),
     ok.
+
+io_lib_print_binary_depth_one(doc) ->
+    "Test binaries printed with a depth of one behave correctly";
+io_lib_print_binary_depth_one(Suite) when is_list(Suite) ->
+    ?line "<<>>" = fmt("~W", [<<>>, 1]),
+    ?line "<<>>" = fmt("~P", [<<>>, 1]),
+    ?line "<<...>>" = fmt("~W", [<<1>>, 1]),
+    ?line "<<...>>" = fmt("~P", [<<1>>, 1]),
+    ?line "<<...>>" = fmt("~W", [<<1:7>>, 1]),
+    ?line "<<...>>" = fmt("~P", [<<1:7>>, 1]),
+    ok.
+
+otp_10302(doc) ->
+    "OTP-10302. Unicode";
+otp_10302(Suite) when is_list(Suite) ->
+    "\"\x{400}\"" = pretty("\x{400}", -1),
+    "<<\"\x{400}\"/utf8>>" = pretty(<<"\x{400}"/utf8>>, -1),
+
+    "<<\"\x{400}foo\"/utf8>>" = pretty(<<"\x{400}foo"/utf8>>, 2),
+    "<<\"채ppl\"/utf8>>" = pretty(<<"채ppl"/utf8>>, 2),
+    "<<\"채ppl\"/utf8...>>" = pretty(<<"채pple"/utf8>>, 2),
+    "<<\"apel\">>" = pretty(<<"apel">>, 2),
+    "<<\"apel\"...>>" = pretty(<<"apelsin">>, 2),
+    "<<228,112,112,108>>" = fmt("~tp", [<<"채ppl">>]),
+    "<<228,...>>" = fmt("~tP", [<<"채ppl">>, 2]),
+
+    Chars = lists:seq(0, 512), % just a few...
+    [] = [C || C <- Chars, S <- io_lib:write_unicode_char_as_latin1(C),
+               not is_latin1(S)],
+    L1 = [S || C <- Chars, S <- io_lib:write_unicode_char(C),
+               not is_latin1(S)],
+    L1 = lists:seq(256, 512),
+
+    [] = [C || C <- Chars, S <- io_lib:write_unicode_string_as_latin1([C]),
+               not is_latin1(S)],
+    L2 = [S || C <- Chars, S <- io_lib:write_unicode_string([C]),
+               not is_latin1(S)],
+    L2 = lists:seq(256, 512),
+
+    ok.
+
+pretty(Term, Depth) when is_integer(Depth) ->
+    Opts = [{column, 1}, {line_length, 20},
+            {depth, Depth}, {max_chars, 60},
+            {encoding, unicode}],
+    pretty(Term, Opts);
+pretty(Term, Opts) when is_list(Opts) ->
+    R = io_lib_pretty:print(Term, Opts),
+    lists:flatten(io_lib:format("~ts", [R])).
+
+is_latin1(S) ->
+    S >= 0 andalso S =< 255.

@@ -35,7 +35,7 @@
 -export([sha256_mac/2, sha256_mac/3]).
 -export([sha384_mac/2, sha384_mac/3]).
 -export([sha512_mac/2, sha512_mac/3]).
--export([hmac_init/2, hmac_update/2, hmac_final/1, hmac_final_n/2]).
+-export([hmac/3, hmac/4, hmac_init/2, hmac_update/2, hmac_final/1, hmac_final_n/2]).
 -export([des_cbc_encrypt/3, des_cbc_decrypt/3, des_cbc_ivec/1]).
 -export([des_ecb_encrypt/2, des_ecb_decrypt/2]).
 -export([des_cfb_encrypt/3, des_cfb_decrypt/3, des_cfb_ivec/2]).
@@ -78,12 +78,11 @@
 		    md5_mac,  md5_mac_96,
 		    sha_mac,  sha_mac_96,
 		    sha224_mac, sha256_mac, sha384_mac, sha512_mac,
-                    sha_mac_init, sha_mac_update, sha_mac_final,
 		    des_cbc_encrypt, des_cbc_decrypt,
 		    des_cfb_encrypt, des_cfb_decrypt,
 		    des_ecb_encrypt, des_ecb_decrypt,
-		    des_ede3_cbc_encrypt, des_ede3_cbc_decrypt,
-		    des_ede3_cfb_encrypt, des_ede3_cfb_decrypt,
+		    des3_cbc_encrypt, des3_cbc_decrypt,
+		    des3_cfb_encrypt, des3_cfb_decrypt,
 		    aes_cfb_128_encrypt, aes_cfb_128_decrypt,
 		    rand_bytes,
 		    strong_rand_bytes,
@@ -103,6 +102,13 @@
 		    aes_cbc_256_encrypt, aes_cbc_256_decrypt,
 		    aes_ctr_encrypt, aes_ctr_decrypt,
                     aes_ctr_stream_init, aes_ctr_stream_encrypt, aes_ctr_stream_decrypt,
+		    aes_cbc_ivec, blowfish_cbc_encrypt, blowfish_cbc_decrypt,
+		    blowfish_cfb64_encrypt, blowfish_cfb64_decrypt,
+		    blowfish_ecb_encrypt, blowfish_ecb_decrypt, blowfish_ofb64_encrypt,
+		    des_cbc_ivec, des_cfb_ivec, erlint, mpint,
+		    hash, hash_init, hash_update, hash_final,
+		    hmac, hmac_init, hmac_update, hmac_final, hmac_final_n, info,
+		    rc2_cbc_encrypt, rc2_cbc_decrypt,
 		    info_lib]).
 
 -type rsa_digest_type() :: 'md5' | 'sha' | 'sha224' | 'sha256' | 'sha384' | 'sha512'.
@@ -114,7 +120,7 @@
 
 -on_load(on_load/0).
 
--define(CRYPTO_NIF_VSN,101).
+-define(CRYPTO_NIF_VSN,201).
 
 on_load() ->
     LibBaseName = "crypto",
@@ -140,7 +146,7 @@ on_load() ->
 		      end
 	      end,
     Lib = filename:join([PrivDir, "lib", LibName]),
-    Status = case erlang:load_nif(Lib, ?CRYPTO_NIF_VSN) of
+    Status = case erlang:load_nif(Lib, {?CRYPTO_NIF_VSN,Lib}) of
 		 ok -> ok;
 		 {error, {load_failed, _}}=Error1 ->
 		     ArchLibDir = 
@@ -152,7 +158,7 @@ on_load() ->
 			 [] -> Error1;
 			 _ ->
 			     ArchLib = filename:join([ArchLibDir, LibName]),
-			     erlang:load_nif(ArchLib, ?CRYPTO_NIF_VSN)
+			     erlang:load_nif(ArchLib, {?CRYPTO_NIF_VSN,ArchLib})
 		     end;
 		 Error1 -> Error1
 	     end,
@@ -191,43 +197,48 @@ version() -> ?CRYPTO_VSN.
 %%
 
 -spec hash(_, iodata()) -> binary().
-hash(md5, Data)    -> md5(Data);
-hash(md4, Data)    -> md4(Data);
-hash(sha, Data)    -> sha(Data);
-hash(sha224, Data) -> sha224(Data);
-hash(sha256, Data) -> sha256(Data);
-hash(sha384, Data) -> sha384(Data);
-hash(sha512, Data) -> sha512(Data).
+hash(md5, Data)          -> md5(Data);
+hash(md4, Data)          -> md4(Data);
+hash(sha, Data)          -> sha(Data);
+hash(ripemd160, Data)    -> ripemd160(Data);
+hash(sha224, Data)       -> sha224(Data);
+hash(sha256, Data)       -> sha256(Data);
+hash(sha384, Data)       -> sha384(Data);
+hash(sha512, Data)       -> sha512(Data).
 
--spec hash_init('md5'|'md4'|'sha'|'sha224'|'sha256'|'sha384'|'sha512') -> any().
+-spec hash_init('md5'|'md4'|'ripemd160'|
+                'sha'|'sha224'|'sha256'|'sha384'|'sha512') -> any().
 
-hash_init(md5) -> {md5, md5_init()};
-hash_init(md4) -> {md4, md4_init()};
-hash_init(sha) -> {sha, sha_init()};
-hash_init(sha224) -> {sha224, sha224_init()};
-hash_init(sha256) -> {sha256, sha256_init()};
-hash_init(sha384) -> {sha384, sha384_init()};
-hash_init(sha512) -> {sha512, sha512_init()}.
+hash_init(md5)       -> {md5, md5_init()};
+hash_init(md4)       -> {md4, md4_init()};
+hash_init(sha)       -> {sha, sha_init()};
+hash_init(ripemd160) -> {ripemd160, ripemd160_init()};
+hash_init(sha224)    -> {sha224, sha224_init()};
+hash_init(sha256)    -> {sha256, sha256_init()};
+hash_init(sha384)    -> {sha384, sha384_init()};
+hash_init(sha512)    -> {sha512, sha512_init()}.
 
 -spec hash_update(_, iodata()) -> any().
 
-hash_update({md5,Context}, Data) -> {md5, md5_update(Context,Data)};
-hash_update({md4,Context}, Data) -> {md4, md4_update(Context,Data)};
-hash_update({sha,Context}, Data) -> {sha, sha_update(Context,Data)};
-hash_update({sha224,Context}, Data) -> {sha224, sha224_update(Context,Data)};
-hash_update({sha256,Context}, Data) -> {sha256, sha256_update(Context,Data)};
-hash_update({sha384,Context}, Data) -> {sha384, sha384_update(Context,Data)};
-hash_update({sha512,Context}, Data) -> {sha512, sha512_update(Context,Data)}.
+hash_update({md5,Context}, Data)       -> {md5, md5_update(Context,Data)};
+hash_update({md4,Context}, Data)       -> {md4, md4_update(Context,Data)};
+hash_update({sha,Context}, Data)       -> {sha, sha_update(Context,Data)};
+hash_update({ripemd160,Context}, Data) -> {ripemd160, ripemd160_update(Context,Data)};
+hash_update({sha224,Context}, Data)    -> {sha224, sha224_update(Context,Data)};
+hash_update({sha256,Context}, Data)    -> {sha256, sha256_update(Context,Data)};
+hash_update({sha384,Context}, Data)    -> {sha384, sha384_update(Context,Data)};
+hash_update({sha512,Context}, Data)    -> {sha512, sha512_update(Context,Data)}.
 
 -spec hash_final(_) -> binary().
 
-hash_final({md5,Context}) -> md5_final(Context);
-hash_final({md4,Context}) -> md4_final(Context);
-hash_final({sha,Context}) -> sha_final(Context);
-hash_final({sha224,Context}) -> sha224_final(Context);
-hash_final({sha256,Context}) -> sha256_final(Context);
-hash_final({sha384,Context}) -> sha384_final(Context);
-hash_final({sha512,Context}) -> sha512_final(Context).
+hash_final({md5,Context})       -> md5_final(Context);
+hash_final({md4,Context})       -> md4_final(Context);
+hash_final({sha,Context})       -> sha_final(Context);
+hash_final({ripemd160,Context}) -> ripemd160_final(Context);
+hash_final({sha224,Context})    -> sha224_final(Context);
+hash_final({sha256,Context})    -> sha256_final(Context);
+hash_final({sha384,Context})    -> sha384_final(Context);
+hash_final({sha512,Context})    -> sha512_final(Context).
 
 %%
 %%  MD5
@@ -255,6 +266,20 @@ md4(_Data) -> ?nif_stub.
 md4_init() -> ?nif_stub.
 md4_update(_Context, _Data) -> ?nif_stub.
 md4_final(_Context) -> ?nif_stub.
+
+%%
+%%  RIPEMD160
+%%
+
+-spec ripemd160(iodata()) -> binary().
+-spec ripemd160_init() -> binary().
+-spec ripemd160_update(binary(), iodata()) -> binary().
+-spec ripemd160_final(binary()) -> binary().
+
+ripemd160(_Data) -> ?nif_stub.
+ripemd160_init() -> ?nif_stub.
+ripemd160_update(_Context, _Data) -> ?nif_stub.
+ripemd160_final(_Context) -> ?nif_stub.
 
 %%
 %% SHA
@@ -412,10 +437,27 @@ sha512_final_nif(_Context) -> ?nif_stub.
 %%
 %%  HMAC (multiple hash options)
 %%
+
+-spec hmac(_, iodata(), iodata()) -> binary().
+-spec hmac(_, iodata(), iodata(), integer()) -> binary().
 -spec hmac_init(atom(), iodata()) -> binary().                             
 -spec hmac_update(binary(), iodata()) -> binary().
 -spec hmac_final(binary()) -> binary().                             
 -spec hmac_final_n(binary(), integer()) -> binary().                             
+
+hmac(md5, Key, Data)    -> md5_mac(Key, Data);
+hmac(sha, Key, Data)    -> sha_mac(Key, Data);
+hmac(sha224, Key, Data) -> sha224_mac(Key, Data);
+hmac(sha256, Key, Data) -> sha256_mac(Key, Data);
+hmac(sha384, Key, Data) -> sha384_mac(Key, Data);
+hmac(sha512, Key, Data) -> sha512_mac(Key, Data).
+
+hmac(md5, Key, Data, Size)    -> md5_mac_n(Key, Data, Size);
+hmac(sha, Key, Data, Size)    -> sha_mac(Key, Data, Size);
+hmac(sha224, Key, Data, Size) -> sha224_mac(Key, Data, Size);
+hmac(sha256, Key, Data, Size) -> sha256_mac(Key, Data, Size);
+hmac(sha384, Key, Data, Size) -> sha384_mac(Key, Data, Size);
+hmac(sha512, Key, Data, Size) -> sha512_mac(Key, Data, Size).
 
 hmac_init(_Type, _Key) -> ?nif_stub.
 hmac_update(_Context, _Data) -> ? nif_stub.
@@ -597,12 +639,12 @@ des_ecb_crypt(_Key, _Data, _IsEncrypt) -> ?nif_stub.
 			     binary().
 
 des3_cbc_encrypt(Key1, Key2, Key3, IVec, Data) ->
-    des_ede3_cbc_encrypt(Key1, Key2, Key3, IVec, Data).
+    des_ede3_cbc_crypt(Key1, Key2, Key3, IVec, Data, true).
 des_ede3_cbc_encrypt(Key1, Key2, Key3, IVec, Data) ->
     des_ede3_cbc_crypt(Key1, Key2, Key3, IVec, Data, true).
 
 des3_cbc_decrypt(Key1, Key2, Key3, IVec, Data) ->
-    des_ede3_cbc_decrypt(Key1, Key2, Key3, IVec, Data).
+    des_ede3_cbc_crypt(Key1, Key2, Key3, IVec, Data, false).
 des_ede3_cbc_decrypt(Key1, Key2, Key3, IVec, Data) ->
     des_ede3_cbc_crypt(Key1, Key2, Key3, IVec, Data, false).
 
@@ -617,16 +659,18 @@ des_ede3_cbc_crypt(_Key1, _Key2, _Key3, _IVec, _Data, _IsEncrypt) -> ?nif_stub.
 			     binary().
 
 des3_cfb_encrypt(Key1, Key2, Key3, IVec, Data) ->
-    des_ede3_cfb_encrypt(Key1, Key2, Key3, IVec, Data).
-des_ede3_cfb_encrypt(Key1, Key2, Key3, IVec, Data) ->
     des_ede3_cfb_crypt(Key1, Key2, Key3, IVec, Data, true).
 
 des3_cfb_decrypt(Key1, Key2, Key3, IVec, Data) ->
-    des_ede3_cfb_decrypt(Key1, Key2, Key3, IVec, Data).
-des_ede3_cfb_decrypt(Key1, Key2, Key3, IVec, Data) ->
     des_ede3_cfb_crypt(Key1, Key2, Key3, IVec, Data, false).
 
-des_ede3_cfb_crypt(_Key1, _Key2, _Key3, _IVec, _Data, _IsEncrypt) -> ?nif_stub.
+des_ede3_cfb_crypt(Key1, Key2, Key3, IVec, Data, IsEncrypt) ->
+    case des_ede3_cfb_crypt_nif(Key1,Key2,Key3,IVec,Data,IsEncrypt) of
+	notsup -> erlang:error(notsup);
+	Bin -> Bin
+    end.
+
+des_ede3_cfb_crypt_nif(_Key1, _Key2, _Key3, _IVec, _Data, _IsEncrypt) -> ?nif_stub.
 
 %%
 %% Blowfish

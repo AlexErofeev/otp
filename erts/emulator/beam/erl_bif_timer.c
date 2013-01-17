@@ -265,10 +265,10 @@ link_proc(Process *p, ErtsBifTimer* btm)
 {
     btm->receiver.proc.ess = p;
     btm->receiver.proc.prev = NULL;
-    btm->receiver.proc.next = p->bif_timers;
-    if (p->bif_timers)	
-	p->bif_timers->receiver.proc.prev = btm;
-    p->bif_timers = btm;
+    btm->receiver.proc.next = p->u.bif_timers;
+    if (p->u.bif_timers)	
+	p->u.bif_timers->receiver.proc.prev = btm;
+    p->u.bif_timers = btm;
 }
 
 static ERTS_INLINE void
@@ -277,7 +277,7 @@ unlink_proc(ErtsBifTimer* btm)
     if (btm->receiver.proc.prev)
 	btm->receiver.proc.prev->receiver.proc.next = btm->receiver.proc.next;
     else
-	btm->receiver.proc.ess->bif_timers = btm->receiver.proc.next;
+	btm->receiver.proc.ess->u.bif_timers = btm->receiver.proc.next;
     if (btm->receiver.proc.next)
 	btm->receiver.proc.next->receiver.proc.prev = btm->receiver.proc.prev;
 }
@@ -324,10 +324,9 @@ bif_timer_timeout(ErtsBifTimer* btm)
 	ASSERT(!erts_get_current_process());
 
 	if (btm->flags & BTM_FLG_BYNAME)
-	    rp = erts_whereis_process(NULL,0,btm->receiver.name,0,ERTS_P2P_FLG_SMP_INC_REFC);
+	    rp = erts_whereis_process(NULL, 0, btm->receiver.name, 0, 0);
 	else {
 	    rp = btm->receiver.proc.ess;
-	    erts_smp_proc_inc_refc(rp);
 	    unlink_proc(btm);
 	}
 
@@ -379,7 +378,6 @@ bif_timer_timeout(ErtsBifTimer* btm)
 #endif
 			       );
 	    erts_smp_proc_unlock(rp, rp_locks);
-	    erts_smp_proc_dec_refc(rp);
 	}
     }
 
@@ -615,7 +613,7 @@ erts_print_bif_timer_info(int to, void *to_arg)
 	for (btm = bif_timer_tab[i]; btm; btm = btm->tab.next) {
 	    Eterm receiver = (btm->flags & BTM_FLG_BYNAME
 			      ? btm->receiver.name
-			      : btm->receiver.proc.ess->id);
+			      : btm->receiver.proc.ess->common.id);
 	    erts_print(to, to_arg, "=timer:%T\n", receiver);
 	    erts_print(to, to_arg, "Message: %T\n", btm->message);
 	    erts_print(to, to_arg, "Time left: %u ms\n",
@@ -639,7 +637,7 @@ erts_cancel_bif_timers(Process *p, ErtsProcLocks plocks)
 	erts_smp_proc_lock(p, plocks);
     }
 
-    btm = p->bif_timers;
+    btm = p->u.bif_timers;
     while (btm) {
 	ErtsBifTimer *tmp_btm;
 	ASSERT(!(btm->flags & BTM_FLG_CANCELED));
@@ -649,7 +647,7 @@ erts_cancel_bif_timers(Process *p, ErtsProcLocks plocks)
 	erts_cancel_timer(&tmp_btm->tm);
     }
 
-    p->bif_timers = NULL;
+    p->u.bif_timers = NULL;
 
     erts_smp_btm_rwunlock();
 }
@@ -698,7 +696,7 @@ erts_bif_timer_foreach(void (*func)(Eterm, Eterm, ErlHeapFragment *, void *),
 	for (btm = bif_timer_tab[i]; btm; btm = btm->tab.next) {
 	    (*func)((btm->flags & BTM_FLG_BYNAME
 		     ? btm->receiver.name
-		     : btm->receiver.proc.ess->id),
+		     : btm->receiver.proc.ess->common.id),
 		    btm->message,
 		    btm->bp,
 		    arg);

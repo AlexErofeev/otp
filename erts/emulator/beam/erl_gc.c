@@ -59,7 +59,7 @@ static Uint reclaimed;			/* no of words reclaimed in GCs */
         erts_fprintf(stderr, "htop=%p\n", (p)->htop); \
         erts_fprintf(stderr, "heap=%p\n", (p)->heap); \
         erl_exit(ERTS_ABORT_EXIT, "%s, line %d: %T: Overrun stack and heap\n", \
-		 __FILE__,__LINE__,(P)->id); \
+		 __FILE__,__LINE__,(P)->common.id); \
     }
 
 #ifdef DEBUG
@@ -129,7 +129,7 @@ static void disallow_heap_frag_ref(Process* p, Eterm* n_htop, Eterm* objv, int n
 #if defined(ARCH_64) && !HALFWORD_HEAP
 # define MAX_HEAP_SIZES 154
 #else
-# define MAX_HEAP_SIZES 55
+# define MAX_HEAP_SIZES 59
 #endif
 
 static Sint heap_sizes[MAX_HEAP_SIZES];	/* Suitable heap sizes. */
@@ -144,6 +144,7 @@ void
 erts_init_gc(void)
 {
     int i = 0;
+    Sint max_heap_size = 0;
 
     ASSERT(offsetof(ProcBin,thing_word) == offsetof(struct erl_off_heap_header,thing_word));
     ASSERT(offsetof(ProcBin,thing_word) == offsetof(ErlFunThing,thing_word));
@@ -168,16 +169,30 @@ erts_init_gc(void)
      * we really don't want that growth when the heaps are that big.
      */
 	    
-    heap_sizes[0] = 34;
-    heap_sizes[1] = 55;
-    for (i = 2; i < 23; i++) {
-	heap_sizes[i] = heap_sizes[i-1] + heap_sizes[i-2];
+    /* Growth stage 1 - Fibonacci + 1*/
+    /* 12,38 will hit size 233, the old default */
+
+    heap_sizes[0] = 12;
+    heap_sizes[1] = 38;
+
+    for(i = 2; i < 23; i++) {
+        /* one extra word for block header */
+        heap_sizes[i] = heap_sizes[i-1] + heap_sizes[i-2] + 1;
     }
 
+
+    /* for 32 bit we want max_heap_size to be MAX(32bit) / 4 [words] (and halfword)
+     * for 64 bit we want max_heap_size to be MAX(52bit) / 8 [words]
+     */
+
+    max_heap_size = sizeof(Eterm) < 8 ? (Sint)((~(Uint)0)/(sizeof(Eterm))) : 
+					(Sint)(((Uint64)1 << 53)/sizeof(Eterm));
+
+    /* Growth stage 2 - 20% growth */
     /* At 1.3 mega words heap, we start to slow down. */
     for (i = 23; i < ALENGTH(heap_sizes); i++) {
-	heap_sizes[i] = 5*(heap_sizes[i-1]/4);
-	if (heap_sizes[i] < 0) {
+	heap_sizes[i] = heap_sizes[i-1] + heap_sizes[i-1]/5;
+	if ((heap_sizes[i] < 0) || heap_sizes[i] > max_heap_size) {
 	    /* Size turned negative. Discard this last size. */
 	    i--;
 	    break;
@@ -370,11 +385,7 @@ erts_garbage_collect(Process* p, int need, Eterm* objv, int nobj)
         trace_gc(p, am_gc_start);
     }
 
-    erts_smp_proc_lock(p, ERTS_PROC_LOCK_STATUS);
-    p->gcstatus = p->status;
-    p->status = P_GARBING;
-    erts_smp_proc_unlock(p, ERTS_PROC_LOCK_STATUS);
-
+    erts_smp_atomic32_read_bor_nob(&p->state, ERTS_PSFLG_GC);
     if (erts_system_monitor_long_gc != 0) {
 	get_now(&ms1, &s1, &us1);
     }
@@ -418,9 +429,8 @@ erts_garbage_collect(Process* p, int need, Eterm* objv, int nobj)
 
     ErtsGcQuickSanityCheck(p);
 
-    erts_smp_proc_lock(p, ERTS_PROC_LOCK_STATUS);
-    p->status = p->gcstatus;
-    erts_smp_proc_unlock(p, ERTS_PROC_LOCK_STATUS);
+    erts_smp_atomic32_read_band_nob(&p->state, ~ERTS_PSFLG_GC);
+
     if (IS_TRACED_FL(p, F_TRACE_GC)) {
         trace_gc(p, am_gc_end);
     }
@@ -504,10 +514,7 @@ erts_garbage_collect_hibernate(Process* p)
     /*
      * Preliminaries.
      */
-    erts_smp_proc_lock(p, ERTS_PROC_LOCK_STATUS);
-    p->gcstatus = p->status;
-    p->status = P_GARBING;
-    erts_smp_proc_unlock(p, ERTS_PROC_LOCK_STATUS);
+    erts_smp_atomic32_read_bor_nob(&p->state, ERTS_PSFLG_GC);
     ErtsGcQuickSanityCheck(p);
     ASSERT(p->mbuf_sz == 0);
     ASSERT(p->mbuf == 0);
@@ -618,9 +625,7 @@ erts_garbage_collect_hibernate(Process* p)
 
     ErtsGcQuickSanityCheck(p);
 
-    erts_smp_proc_lock(p, ERTS_PROC_LOCK_STATUS);
-    p->status = p->gcstatus;
-    erts_smp_proc_unlock(p, ERTS_PROC_LOCK_STATUS);
+    erts_smp_atomic32_read_band_nob(&p->state, ~ERTS_PSFLG_GC);
 }
 
 
@@ -644,10 +649,7 @@ erts_garbage_collect_literals(Process* p, Eterm* literals,
     /*
      * Set GC state.
      */
-    erts_smp_proc_lock(p, ERTS_PROC_LOCK_STATUS);
-    p->gcstatus = p->status;
-    p->status = P_GARBING;
-    erts_smp_proc_unlock(p, ERTS_PROC_LOCK_STATUS);
+    erts_smp_atomic32_read_bor_nob(&p->state, ERTS_PSFLG_GC);
 
     /*
      * We assume that the caller has already done a major collection
@@ -789,9 +791,7 @@ erts_garbage_collect_literals(Process* p, Eterm* literals,
     /*
      * Restore status.
      */
-    erts_smp_proc_lock(p, ERTS_PROC_LOCK_STATUS);
-    p->status = p->gcstatus;
-    erts_smp_proc_unlock(p, ERTS_PROC_LOCK_STATUS);
+    erts_smp_atomic32_read_band_nob(&p->state, ~ERTS_PSFLG_GC);
 }
 
 static int
@@ -883,14 +883,12 @@ minor_collection(Process* p, int need, Eterm* objv, int nobj, Uint *recl)
 		}
 	    }
 
-            if (wanted < MIN_HEAP_SIZE(p)) {
-                wanted = MIN_HEAP_SIZE(p);
-            } else {
-                wanted = next_heap_size(p, wanted, 0);
-            }
+	    wanted = wanted < MIN_HEAP_SIZE(p) ? MIN_HEAP_SIZE(p)
+					       : next_heap_size(p, wanted, 0);
             if (wanted < HEAP_SIZE(p)) {
                 shrink_new_heap(p, wanted, objv, nobj);
             }
+
             ASSERT(HEAP_SIZE(p) == next_heap_size(p, HEAP_SIZE(p), 0));
 	    return 1;		/* We are done. */
         }
@@ -1449,11 +1447,10 @@ adjust_after_fullsweep(Process *p, Uint size_before, int need, Eterm *objv, int 
            I think this is better as fullsweep is used mainly on
            small memory systems, but I could be wrong... */
         wanted = 2 * need_after;
-        if (wanted < p->min_heap_size) {
-            sz = p->min_heap_size;
-        } else {
-            sz = next_heap_size(p, wanted, 0);
-        }
+	
+	sz = wanted < p->min_heap_size ? p->min_heap_size
+				       : next_heap_size(p, wanted, 0);
+
         if (sz < HEAP_SIZE(p)) {
             shrink_new_heap(p, sz, objv, nobj);
         }
@@ -1961,9 +1958,9 @@ setup_rootset(Process *p, Eterm *objv, int nobj, Rootset *rootset)
 	n++;
     }
 #endif
-    ASSERT(is_nil(p->tracer_proc) ||
-	   is_internal_pid(p->tracer_proc) ||
-	   is_internal_port(p->tracer_proc));
+    ASSERT(is_nil(ERTS_TRACER_PROC(p)) ||
+	   is_internal_pid(ERTS_TRACER_PROC(p)) ||
+	   is_internal_port(ERTS_TRACER_PROC(p)));
 
     ASSERT(is_pid(follow_moved(p->group_leader)));
     if (is_not_immed(p->group_leader)) {

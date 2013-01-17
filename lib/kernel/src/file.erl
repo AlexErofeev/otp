@@ -38,7 +38,7 @@
 %% Specialized
 -export([ipread_s32bu_p32bu/3]).
 %% Generic file contents.
--export([open/2, close/1, advise/4,
+-export([open/2, close/1, advise/4, allocate/3,
 	 read/2, write/2, 
 	 pread/2, pread/3, pwrite/2, pwrite/3,
 	 read_line/1,
@@ -111,6 +111,24 @@
 -type sendfile_option() :: {chunk_size, non_neg_integer()}.
 -type file_info_option() :: {'time', 'local'} | {'time', 'universal'} 
 			  | {'time', 'posix'}.
+%%% BIFs
+
+-export([file_info/1, native_name_encoding/0]).
+
+-spec file_info(Filename) -> {ok, FileInfo} | {error, Reason} when
+      Filename :: name(),
+      FileInfo :: file_info(),
+      Reason :: posix() | badarg.
+
+file_info(_) ->
+    erlang:nif_error(undef).
+
+-spec native_name_encoding() -> latin1 | utf8.
+
+native_name_encoding() ->
+    erlang:nif_error(undef).
+
+%%% End of BIFs
 
 
 %%%-----------------------------------------------------------------
@@ -379,9 +397,10 @@ raw_write_file_info(Name, #file_info{} = Info) ->
 
 %% Contemporary mode specification - list of options
 
--spec open(Filename, Modes) -> {ok, IoDevice} | {error, Reason} when
+-spec open(File, Modes) -> {ok, IoDevice} | {error, Reason} when
+      File :: Filename | iodata(),
       Filename :: name(),
-      Modes :: [mode()],
+      Modes :: [mode() | ram],
       IoDevice :: io_device(),
       Reason :: posix() | badarg | system_limit.
 
@@ -470,6 +489,18 @@ advise(#file_descriptor{module = Module} = Handle, Offset, Length, Advise) ->
     Module:advise(Handle, Offset, Length, Advise);
 advise(_, _, _, _) ->
     {error, badarg}.
+
+-spec allocate(File, Offset, Length) ->
+	'ok' | {'error', posix()} when
+      File :: io_device(),
+      Offset :: non_neg_integer(),
+      Length :: non_neg_integer().
+
+allocate(File, Offset, Length) when is_pid(File) ->
+    R = file_request(File, {allocate, Offset, Length}),
+    wait_file_reply(File, R);
+allocate(#file_descriptor{module = Module} = Handle, Offset, Length) ->
+    Module:allocate(Handle, Offset, Length).
 
 -spec read(IoDevice, Number) -> {ok, Data} | eof | {error, Reason} when
       IoDevice :: io_device() | atom(),
@@ -1296,6 +1327,7 @@ sendfile_send(Sock, Data, Old) ->
 %%% Helpers
 
 consult_stream(Fd) ->
+    _ = epp:set_encoding(Fd),
     consult_stream(Fd, 1, []).
 
 consult_stream(Fd, Line, Acc) ->
@@ -1309,6 +1341,7 @@ consult_stream(Fd, Line, Acc) ->
     end.
 
 eval_stream(Fd, Handling, Bs) ->
+    _ = epp:set_encoding(Fd),
     eval_stream(Fd, Handling, 1, undefined, [], Bs).
 
 eval_stream(Fd, H, Line, Last, E, Bs) ->

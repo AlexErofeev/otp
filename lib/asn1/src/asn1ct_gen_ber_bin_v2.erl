@@ -114,31 +114,6 @@ gen_encode(Erules,Typename,Type) when is_record(Type,type) ->
 		_ -> % embedded type with constructed name
 		    true
 	    end,
-	    case lists:member(InnerType,['SET','SEQUENCE']) of
-		true -> 
-		    case get(asn_keyed_list) of
-			true ->
-			    CompList = 
-				case Type#type.def of
-				    #'SEQUENCE'{components=Cl} -> Cl;
-				    #'SET'{components=Cl} -> Cl
-				end,
-			    emit([nl,"'enc_",asn1ct_gen:list2name(Typename),
-				  "'(Val, TagIn",ObjFun,
-				  ") when is_list(Val) ->",nl]),
-			    emit(["    'enc_",asn1ct_gen:list2name(Typename),
-				  "'(?RT_BER:fixoptionals(",
-				  {asis,optionals(CompList)},
-				  ",Val), TagIn",ObjFun,");",nl,nl]);
-			_ -> true
-		    end;
-		_ ->
-		    emit([nl,"'enc_",asn1ct_gen:list2name(Typename),
-			  "'({'",asn1ct_gen:list2name(Typename),
-			  "',Val}, TagIn",ObjFun,") ->",nl]),
-		    emit(["   'enc_",asn1ct_gen:list2name(Typename),
-			  "'(Val, TagIn",ObjFun,");",nl,nl])
-	    end,
 	    emit(["'enc_",asn1ct_gen:list2name(Typename),
 		  "'(Val, TagIn",ObjFun,") ->",nl,"   "]),
 	    asn1ct_gen:gen_encode_constructed(Erules,Typename,InnerType,Type);
@@ -172,30 +147,6 @@ gen_encode_user(Erules,D) when is_record(D,typedef) ->
 	  "'(Val",") ->",nl]),
     emit(["    'enc_",asn1ct_gen:list2name(Typename),
 	  "'(Val, ", {asis,lists:reverse(Tag)},").",nl,nl]),
-
-    case lists:member(InnerType,['SET','SEQUENCE']) of
-	true -> 
-	    case get(asn_keyed_list) of
-		true ->
-		    CompList = 
-			case Type#type.def of
-			    #'SEQUENCE'{components=Cl} -> Cl;
-			    #'SET'{components=Cl} -> Cl
-			end,
-
-		    emit([nl,"'enc_",asn1ct_gen:list2name(Typename),
-			  "'(Val, TagIn) when is_list(Val) ->",nl]),
-		    emit(["    'enc_",asn1ct_gen:list2name(Typename),
-			  "'(?RT_BER:fixoptionals(",
-			  {asis,optionals(CompList)},
-			  ",Val), TagIn);",nl,nl]);
-		_ -> true
-	    end;
-	_ ->
-	    emit({nl,"'enc_",asn1ct_gen:list2name(Typename),
-		  "'({'",asn1ct_gen:list2name(Typename),"',Val}, TagIn) ->",nl}),
-	    emit({"   'enc_",asn1ct_gen:list2name(Typename),"'(Val, TagIn);",nl,nl})
-    end,
     emit({"'enc_",asn1ct_gen:list2name(Typename),"'(Val, TagIn) ->",nl}),
     CurrentMod = get(currmod),
     case asn1ct_gen:type(InnerType) of
@@ -1504,7 +1455,7 @@ gen_objset_dec(Erules,ObjSetName,_UniqueName,['EXTENSIONMARK'],_ClName,
     emit([indent(2),"fun(_,Bytes, _RestPrimFieldName) ->",nl]),
     
     case Erules of
-	ber_bin_v2 ->
+	ber ->
 	    emit([indent(4),"case Bytes of",nl,
 		  indent(6),"Bin when is_binary(Bin) -> ",nl,
 		  indent(8),"Bin;",nl,
@@ -1771,19 +1722,6 @@ mkfuncname(WhatKind,DecOrEnc) ->
 	    lists:concat(["'",DecOrEnc,"_",WhatKind,"'"])
 	    
     end.
-
-optionals(L) -> optionals(L,[],1).
-
-optionals([{'EXTENSIONMARK',_,_}|Rest],Acc,Pos) ->
-    optionals(Rest,Acc,Pos); % optionals in extension are currently not handled
-optionals([#'ComponentType'{name=Name,prop='OPTIONAL'}|Rest],Acc,Pos) ->
-		 optionals(Rest,[{Name,Pos}|Acc],Pos+1);
-optionals([#'ComponentType'{name=Name,prop={'DEFAULT',_}}|Rest],Acc,Pos) ->
-		 optionals(Rest,[{Name,Pos}|Acc],Pos+1);
-optionals([#'ComponentType'{}|Rest],Acc,Pos) ->
-		 optionals(Rest,Acc,Pos+1);
-optionals([],Acc,_) ->
-    lists:reverse(Acc).
 
 get_constraint(C,Key) ->
     case lists:keysearch(Key,1,C) of

@@ -296,36 +296,6 @@ erts_msg_distext2heap(Process *pp,
     return THE_NON_VALUE;
  }
 
-static ERTS_INLINE void
-notify_new_message(Process *receiver)
-{
-    ERTS_SMP_LC_ASSERT(ERTS_PROC_LOCK_STATUS
-		       & erts_proc_lc_my_proc_locks(receiver));
-
-    switch (receiver->status) {
-    case P_GARBING:
-	switch (receiver->gcstatus) {
-	case P_SUSPENDED:
-	    goto suspended;
-	case P_WAITING:
-	    goto waiting;
-	default:
-	    break;
-	}
-	break;
-    case P_SUSPENDED:
-    suspended:
-	receiver->rstatus = P_RUNABLE;
-	break;
-    case P_WAITING:
-    waiting:
-	erts_add_to_runq(receiver);
-	break;
-    default:
-	break;
-    }
-}
-
 void
 erts_queue_dist_message(Process *rcvr,
 			ErtsProcLocks *rcvr_locks,
@@ -339,7 +309,7 @@ erts_queue_dist_message(Process *rcvr,
     Sint tok_serial = 0;
 #endif
 #ifdef ERTS_SMP
-    ErtsProcLocks need_locks;
+    erts_aint_t state;
 #endif
 
     ERTS_SMP_LC_ASSERT(*rcvr_locks == erts_proc_lc_my_proc_locks(rcvr));
@@ -347,20 +317,21 @@ erts_queue_dist_message(Process *rcvr,
     mp = message_alloc();
 
 #ifdef ERTS_SMP
-    need_locks = ~(*rcvr_locks) & (ERTS_PROC_LOCK_MSGQ|ERTS_PROC_LOCK_STATUS);
-    if (need_locks) {
-	*rcvr_locks |= need_locks;
-	if (erts_smp_proc_trylock(rcvr, need_locks) == EBUSY) {
-	    if (need_locks == ERTS_PROC_LOCK_MSGQ) {
+    if (!(*rcvr_locks & ERTS_PROC_LOCK_MSGQ)) {
+	if (erts_smp_proc_trylock(rcvr, ERTS_PROC_LOCK_MSGQ) == EBUSY) {
+	    ErtsProcLocks need_locks = ERTS_PROC_LOCK_MSGQ;
+	    if (*rcvr_locks & ERTS_PROC_LOCK_STATUS) {
 		erts_smp_proc_unlock(rcvr, ERTS_PROC_LOCK_STATUS);
-		need_locks = (ERTS_PROC_LOCK_MSGQ
-			      | ERTS_PROC_LOCK_STATUS);
+		need_locks |= ERTS_PROC_LOCK_STATUS;
 	    }
 	    erts_smp_proc_lock(rcvr, need_locks);
 	}
     }
 
-    if (rcvr->is_exiting || ERTS_PROC_PENDING_EXIT(rcvr)) {
+    state = erts_smp_atomic32_read_acqb(&rcvr->state);
+    if (state & (ERTS_PSFLG_PENDING_EXIT|ERTS_PSFLG_EXITING)) {
+	if (!(*rcvr_locks & ERTS_PROC_LOCK_MSGQ))
+	    erts_smp_proc_unlock(rcvr, ERTS_PROC_LOCK_MSGQ);
 	/* Drop message if receiver is exiting or has a pending exit ... */
 	if (is_not_nil(token)) {
 	    ErlHeapFragment *heap_frag;
@@ -376,6 +347,8 @@ erts_queue_dist_message(Process *rcvr,
 	/* Ahh... need to decode it in order to trace it... */
 	ErlHeapFragment *mbuf;
 	Eterm msg;
+	if (!(*rcvr_locks & ERTS_PROC_LOCK_MSGQ))
+	    erts_smp_proc_unlock(rcvr, ERTS_PROC_LOCK_MSGQ);
 	message_free(mp);
 	msg = erts_msg_distext2heap(rcvr, rcvr_locks, &mbuf, &token, dist_ext);
 	if (is_value(msg))
@@ -437,26 +410,33 @@ erts_queue_dist_message(Process *rcvr,
 	mp->data.dist_ext = dist_ext;
 	LINK_MESSAGE(rcvr, mp);
 
-	notify_new_message(rcvr);
+	if (!(*rcvr_locks & ERTS_PROC_LOCK_MSGQ))
+	    erts_smp_proc_unlock(rcvr, ERTS_PROC_LOCK_MSGQ);
+
+	erts_proc_notify_new_message(rcvr);
     }
 }
 
 /* Add a message last in message queue */
-void
-erts_queue_message(Process* receiver,
-		   ErtsProcLocks *receiver_locks,
-		   ErlHeapFragment* bp,
-		   Eterm message,
-		   Eterm seq_trace_token
+static Sint
+queue_message(Process *c_p,
+	      Process* receiver,
+	      ErtsProcLocks *receiver_locks,
+	      erts_aint32_t *receiver_state,
+	      ErlHeapFragment* bp,
+	      Eterm message,
+	      Eterm seq_trace_token
 #ifdef USE_VM_PROBES
 		   , Eterm dt_utag
 #endif
-)
+    )
 {
+    Sint res;
     ErlMessage* mp;
-#ifdef ERTS_SMP
-    ErtsProcLocks need_locks;
-#else
+    int locked_msgq = 0;
+    erts_aint_t state;
+
+#ifndef ERTS_SMP
     ASSERT(bp != NULL || receiver->mbuf == NULL);
 #endif
 
@@ -464,31 +444,45 @@ erts_queue_message(Process* receiver,
 
     mp = message_alloc();
 
+    if (receiver_state)
+	state = *receiver_state;
+    else
+	state = erts_smp_atomic32_read_acqb(&receiver->state);
+
 #ifdef ERTS_SMP
-    need_locks = ~(*receiver_locks) & (ERTS_PROC_LOCK_MSGQ
-				       | ERTS_PROC_LOCK_STATUS);
-    if (need_locks) {
-	*receiver_locks |= need_locks;
-	if (erts_smp_proc_trylock(receiver, need_locks) == EBUSY) {
-	    if (need_locks == ERTS_PROC_LOCK_MSGQ) {
+
+    if (state & (ERTS_PSFLG_EXITING|ERTS_PSFLG_PENDING_EXIT))
+	goto exiting;
+
+    if (!(*receiver_locks & ERTS_PROC_LOCK_MSGQ)) {
+	if (erts_smp_proc_trylock(receiver, ERTS_PROC_LOCK_MSGQ) == EBUSY) {
+	    ErtsProcLocks need_locks = ERTS_PROC_LOCK_MSGQ;
+	    if (*receiver_locks & ERTS_PROC_LOCK_STATUS) {
 		erts_smp_proc_unlock(receiver, ERTS_PROC_LOCK_STATUS);
-		need_locks = (ERTS_PROC_LOCK_MSGQ
-			      | ERTS_PROC_LOCK_STATUS);
+		need_locks |= ERTS_PROC_LOCK_STATUS;
 	    }
 	    erts_smp_proc_lock(receiver, need_locks);
 	}
+	locked_msgq = 1;
+	state = erts_smp_atomic32_read_nob(&receiver->state);
+	if (receiver_state)
+	    *receiver_state = state;
     }
 
-    if (receiver->is_exiting || ERTS_PROC_PENDING_EXIT(receiver)) {
-	/* Drop message if receiver is exiting or has a pending
-	 * exit ...
-	 */
+#endif
+
+    if (state & (ERTS_PSFLG_PENDING_EXIT|ERTS_PSFLG_EXITING)) {
+#ifdef ERTS_SMP
+    exiting:
+#endif
+	/* Drop message if receiver is exiting or has a pending exit... */
+	if (locked_msgq)
+	    erts_smp_proc_unlock(receiver, ERTS_PROC_LOCK_MSGQ);
 	if (bp)
 	    free_message_buffer(bp);
 	message_free(mp);
-	return;
+	return 0;
     }
-#endif
 
     ERL_MESSAGE_TERM(mp) = message;
     ERL_MESSAGE_TOKEN(mp) = seq_trace_token;
@@ -498,7 +492,10 @@ erts_queue_message(Process* receiver,
     mp->next = NULL;
     mp->data.heap_frag = bp;
 
-#ifdef ERTS_SMP
+#ifndef ERTS_SMP
+    res = receiver->msg.len;
+#else
+    res = receiver->msg_inq.len;
     if (*receiver_locks & ERTS_PROC_LOCK_MAIN) {
 	/*
 	 * We move 'in queue' to 'private queue' and place
@@ -508,15 +505,15 @@ erts_queue_message(Process* receiver,
 	 * we don't need to include the 'in queue' in
 	 * the root set when garbage collecting.
 	 */
+	res += receiver->msg.len;
 	ERTS_SMP_MSGQ_MV_INQ2PRIVQ(receiver);
 	LINK_MESSAGE_PRIVQ(receiver, mp);
     }
-    else {
+    else
+#endif
+    {
 	LINK_MESSAGE(receiver, mp);
     }
-#else
-    LINK_MESSAGE(receiver, mp);
-#endif
 
 #ifdef USE_VM_PROBES
     if (DTRACE_ENABLED(message_queued)) {
@@ -536,15 +533,43 @@ erts_queue_message(Process* receiver,
                 tok_label, tok_lastcnt, tok_serial);
     }
 #endif
-    notify_new_message(receiver);
 
-    if (IS_TRACED_FL(receiver, F_TRACE_RECEIVE)) {
+    if (IS_TRACED_FL(receiver, F_TRACE_RECEIVE))
 	trace_receive(receiver, message);
-    }
+
+    if (locked_msgq)
+	erts_smp_proc_unlock(receiver, ERTS_PROC_LOCK_MSGQ);
+
+    erts_proc_notify_new_message(receiver);
 
 #ifndef ERTS_SMP
     ERTS_HOLE_CHECK(receiver);
 #endif
+    return res;
+}
+
+void
+erts_queue_message(Process* receiver,
+		   ErtsProcLocks *receiver_locks,
+		   ErlHeapFragment* bp,
+		   Eterm message,
+		   Eterm seq_trace_token
+#ifdef USE_VM_PROBES
+		   , Eterm dt_utag
+#endif
+    )
+{
+    queue_message(NULL,
+		  receiver,
+		  receiver_locks,
+		  NULL,
+		  bp,
+		  message,
+		  seq_trace_token
+#ifdef USE_VM_PROBES
+		  , dt_utag
+#endif
+	);
 }
 
 void
@@ -576,9 +601,7 @@ erts_move_msg_mbuf_to_heap(Eterm** hpp, ErlOffHeap* off_heap, ErlMessage *msg)
 #endif
 
 #ifdef HARD_DEBUG
-    ProcBin *dbg_mso_start = off_heap->mso;
-    ErlFunThing *dbg_fun_start = off_heap->funs;
-    ExternalThing *dbg_external_start = off_heap->externals;
+    struct erl_off_heap_header* dbg_oh_start = off_heap->first;
     Eterm dbg_term, dbg_token;
     ErlHeapFragment *dbg_bp;
     Uint *dbg_hp, *dbg_thp_start;
@@ -752,48 +775,16 @@ copy_done:
 	int i, j;
 	ErlHeapFragment* frag;
 	{
-	    ProcBin *mso = off_heap->mso;
+	    struct erl_off_heap_header* dbg_oh = off_heap->first;
 	    i = j = 0;
-	    while (mso != dbg_mso_start) {
-		mso = mso->next;
+	    while (dbg_oh != dbg_oh_start) {
+		dbg_oh = dbg_oh->next;
 		i++;
 	    }
 	    for (frag=bp; frag; frag=frag->next) {
-		mso = frag->off_heap.mso;
-		while (mso) {
-		    mso = mso->next;
-		    j++;
-		}
-	    }
-	    ASSERT(i == j);
-	}
-	{
-	    ErlFunThing *fun = off_heap->funs;
-	    i = j = 0;
-	    while (fun != dbg_fun_start) {
-		fun = fun->next;
-		i++;
-	    }
-	    for (frag=bp; frag; frag=frag->next) {
-		fun = frag->off_heap.funs;
-		while (fun) {
-		    fun = fun->next;
-		    j++;
-		}
-	    }
-	    ASSERT(i == j);
-	}
-	{
-	    ExternalThing *external = off_heap->externals;
-	    i = j = 0;
-	    while (external != dbg_external_start) {
-		external = external->next;
-		i++;
-	    }
-	    for (frag=bp; frag; frag=frag->next) {
-		external = frag->off_heap.externals;
-		while (external) {
-		    external = external->next;
+		dbg_oh = frag->off_heap.first;
+		while (dbg_oh) {
+		    dbg_oh = dbg_oh->next;
 		    j++;
 		}
 	    }
@@ -878,7 +869,7 @@ erts_move_msg_attached_data_to_heap(Eterm **hpp, ErlOffHeap *ohp, ErlMessage *ms
  * Send a local message when sender & receiver processes are known.
  */
 
-void
+Sint
 erts_send_message(Process* sender,
 		  Process* receiver,
 		  ErtsProcLocks *receiver_locks,
@@ -888,6 +879,7 @@ erts_send_message(Process* sender,
     Uint msize;
     ErlHeapFragment* bp = NULL;
     Eterm token = NIL;
+    Sint res = 0;
 #ifdef USE_VM_PROBES
     DTRACE_CHARBUF(sender_name, 64);
     DTRACE_CHARBUF(receiver_name, 64);
@@ -902,8 +894,8 @@ erts_send_message(Process* sender,
  #ifdef USE_VM_PROBES
     *sender_name = *receiver_name = '\0';
    if (DTRACE_ENABLED(message_send)) {
-        erts_snprintf(sender_name, sizeof(DTRACE_CHARBUF_NAME(sender_name)), "%T", sender->id);
-        erts_snprintf(receiver_name, sizeof(DTRACE_CHARBUF_NAME(receiver_name)), "%T", receiver->id);
+        erts_snprintf(sender_name, sizeof(DTRACE_CHARBUF_NAME(sender_name)), "%T", sender->common.id);
+        erts_snprintf(receiver_name, sizeof(DTRACE_CHARBUF_NAME(receiver_name)), "%T", receiver->common.id);
     }
 #endif
     if (SEQ_TRACE_TOKEN(sender) != NIL && !(flags & ERTS_SND_FLG_NO_SEQ_TRACE)) {
@@ -925,7 +917,7 @@ erts_send_message(Process* sender,
 
 	    seq_trace_update_send(sender);
 	    seq_trace_output(stoken, message, SEQ_TRACE_SEND, 
-			     receiver->id, sender);
+			     receiver->common.id, sender);
 	    seq_trace_size = 6; /* TUPLE5 */
 #ifdef USE_VM_PROBES
 	}
@@ -956,7 +948,7 @@ erts_send_message(Process* sender,
 #ifdef DTRACE_TAG_HARDDEBUG
 	    erts_fprintf(stderr,
 			 "Dtrace -> (%T) Spreading tag (%T) with "
-			 "message %T!\r\n",sender->id, utag, message);
+			 "message %T!\r\n",sender->common.id, utag, message);
 #endif
 	}
 #endif
@@ -974,15 +966,17 @@ erts_send_message(Process* sender,
 		    msize, tok_label, tok_lastcnt, tok_serial);
         }
 #endif
-        erts_queue_message(receiver,
-			   receiver_locks,
-			   bp,
-			   message,
-			   token
+        res = queue_message(NULL,
+			    receiver,
+			    receiver_locks,
+			    NULL,
+			    bp,
+			    message,
+			    token
 #ifdef USE_VM_PROBES
-			   , utag
+			    , utag
 #endif
-			   );
+	    );
         BM_SWAP_TIMER(send,system);
     } else if (sender == receiver) {
 	/* Drop message if receiver has a pending exit ... */
@@ -1026,31 +1020,45 @@ erts_send_message(Process* sender,
 	    ERTS_SMP_MSGQ_MV_INQ2PRIVQ(receiver);
 	    LINK_MESSAGE_PRIVQ(receiver, mp);
 
+	    res = receiver->msg.len;
+
 	    if (IS_TRACED_FL(receiver, F_TRACE_RECEIVE)) {
 		trace_receive(receiver, message);
 	    }
 	}
         BM_SWAP_TIMER(send,system);
-	return;
     } else {
 #ifdef ERTS_SMP
 	ErlOffHeap *ohp;
         Eterm *hp;
+	erts_aint32_t state;
+
 	BM_SWAP_TIMER(send,size);
 	msize = size_object(message);
 	BM_SWAP_TIMER(size,send);
-	hp = erts_alloc_message_heap(msize,&bp,&ohp,receiver,receiver_locks);
+	hp = erts_alloc_message_heap_state(msize,
+					   &bp,
+					   &ohp,
+					   receiver,
+					   receiver_locks,
+					   &state);
 	BM_SWAP_TIMER(send,copy);
 	message = copy_struct(message, msize, &hp, ohp);
 	BM_MESSAGE_COPIED(msz);
 	BM_SWAP_TIMER(copy,send);
         DTRACE6(message_send, sender_name, receiver_name,
                 msize, tok_label, tok_lastcnt, tok_serial);
-	erts_queue_message(receiver, receiver_locks, bp, message, token
+	res = queue_message(sender,
+			    receiver,
+			    receiver_locks,
+			    &state,
+			    bp,
+			    message,
+			    token
 #ifdef USE_VM_PROBES
-			   , NIL
+			    , NIL
 #endif
-			   );
+	    );
         BM_SWAP_TIMER(send,system);
 #else
 	ErlMessage* mp = message_alloc();
@@ -1080,19 +1088,16 @@ erts_send_message(Process* sender,
 	mp->next = NULL;
 	mp->data.attached = NULL;
 	LINK_MESSAGE(receiver, mp);
+	res = receiver->msg.len;
+	erts_proc_notify_new_message(receiver);
 
-	if (receiver->status == P_WAITING) {
-	    erts_add_to_runq(receiver);
-	} else if (receiver->status == P_SUSPENDED) {
-	    receiver->rstatus = P_RUNABLE;
-	}
 	if (IS_TRACED_FL(receiver, F_TRACE_RECEIVE)) {
 	    trace_receive(receiver, message);
 	}
         BM_SWAP_TIMER(send,system);
 #endif /* #ifndef ERTS_SMP */
-	return;
     }
+   return res;
 }
 
 /*
@@ -1131,7 +1136,7 @@ erts_deliver_exit_message(Eterm from, Process *to, ErtsProcLocks *to_locksp,
 	save = TUPLE3(hp, am_EXIT, from_copy, mess);
 	hp += 4;
 	/* the trace token must in this case be updated by the caller */
-	seq_trace_output(token, save, SEQ_TRACE_SEND, to->id, NULL);
+	seq_trace_output(token, save, SEQ_TRACE_SEND, to->common.id, NULL);
 	temptoken = copy_struct(token, sz_token, &hp, &bp->off_heap);
 	erts_queue_message(to, to_locksp, bp, save, temptoken
 #ifdef USE_VM_PROBES

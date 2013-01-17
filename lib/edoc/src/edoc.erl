@@ -120,7 +120,8 @@ file(Name, Options) ->
     Suffix = proplists:get_value(file_suffix, Options,
 				 ?DEFAULT_FILE_SUFFIX),
     Dir = proplists:get_value(dir, Options, filename:dirname(Name)),
-    edoc_lib:write_file(Text, Dir, BaseName ++ Suffix).
+    Encoding = [{encoding, edoc_lib:read_encoding(Name, [])}],
+    edoc_lib:write_file(Text, Dir, BaseName ++ Suffix, '', Encoding).
 
 
 %% TODO: better documentation of files/1/2, packages/1/2, application/1/2/3
@@ -455,14 +456,14 @@ expand_sources(Ss, Opts) ->
 	  end,
     expand_sources(Ss1, Suffix, sets:new(), [], []).
 
-expand_sources([{P, F, D} | Fs], Suffix, S, As, Ms) ->
-    M = list_to_atom(packages:concat(P, filename:rootname(F, Suffix))),
+expand_sources([{'', F, D} | Fs], Suffix, S, As, Ms) ->
+    M = list_to_atom(filename:rootname(F, Suffix)),
     case sets:is_element(M, S) of
 	true ->
 	    expand_sources(Fs, Suffix, S, As, Ms);
 	false ->
 	    S1 = sets:add_element(M, S),
-	    expand_sources(Fs, Suffix, S1, [{M, P, F, D} | As],
+	    expand_sources(Fs, Suffix, S1, [{M, '', F, D} | As],
 			   [M | Ms])
     end;
 expand_sources([], _Suffix, _S, As, Ms) ->

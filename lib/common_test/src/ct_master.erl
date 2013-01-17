@@ -51,7 +51,7 @@
 %%%               {testcase,Cases} | {spec,TestSpecs} | {allow_user_terms,Bool} | 
 %%%               {logdir,LogDir} | {event_handler,EventHandlers} | 
 %%%               {silent_connections,Conns} | {cover,CoverSpecFile} |
-%%%		  {userconfig, UserCfgFiles}
+%%%		  {cover_stop,Bool} | {userconfig, UserCfgFiles}
 %%%       CfgFiles = string() | [string()]
 %%%       TestDirs = string() | [string()]
 %%%       Suites = atom() | [atom()]
@@ -696,8 +696,9 @@ status(MasterPid,Event) ->
 
 log(To,Heading,Str,Args) ->
     if To == all ; To == tty ->
-	    Str1 = ["=== ",Heading," ===\n",io_lib:format(Str,Args),"\n"],
-	    io:format(Str1,[]);
+	    Chars = ["=== ",Heading," ===\n",
+		     io_lib:format(Str,Args),"\n"],
+	    io:put_chars(Chars);
        true ->
 	    ok
     end,

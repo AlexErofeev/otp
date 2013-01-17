@@ -27,7 +27,7 @@
 %% Generic file contents operations
 -export([open/2, close/1, datasync/1, sync/1, advise/4, position/2, truncate/1,
 	 write/2, pwrite/2, pwrite/3, read/2, read_line/1, pread/2, pread/3,
-	 copy/3, sendfile/10]).
+	 copy/3, sendfile/10, allocate/3]).
 
 %% Specialized file operations
 -export([open/1, open/3]).
@@ -100,6 +100,7 @@
 -define(FILE_FDATASYNC,        30).
 -define(FILE_ADVISE,           31).
 -define(FILE_SENDFILE,         32).
+-define(FILE_ALLOCATE,         33).
 
 %% Driver responses
 -define(FILE_RESP_OK,          0).
@@ -146,6 +147,32 @@
 -define(POSIX_FADV_DONTNEED,   4).
 -define(POSIX_FADV_NOREUSE,    5).
 
+
+%%% BIFs
+
+-export([internal_name2native/1,
+         internal_native2name/1,
+         internal_normalize_utf8/1]).
+
+-type unicode_string() :: [unicode:unicode_char()].
+-type prim_file_name() :: unicode_string() | unicode:unicode_binary().
+
+-spec internal_name2native(prim_file_name()) -> binary().
+
+internal_name2native(_) ->
+    erlang:nif_error(undefined).
+
+-spec internal_native2name(binary()) -> prim_file_name().
+
+internal_native2name(_) ->
+    erlang:nif_error(undefined).
+
+-spec internal_normalize_utf8(unicode:unicode_binary()) -> unicode_string().
+
+internal_normalize_utf8(_) ->
+    erlang:nif_error(undefined).
+
+%%% End of BIFs
 
 %%%-----------------------------------------------------------------
 %%% Functions operating on a file through a handle. ?FD_DRV.
@@ -265,6 +292,11 @@ advise(#file_descriptor{module = ?MODULE, data = {Port, _}},
 	_ ->
 	    {error, einval}
     end.
+
+%% Returns {error, Reason} | ok.
+allocate(#file_descriptor{module = ?MODULE, data = {Port, _}}, Offset, Length) ->
+    Cmd = <<?FILE_ALLOCATE, Offset:64/signed, Length:64/signed>>,
+    drv_command(Port, Cmd).
 
 %% Returns {error, Reason} | ok.
 write(#file_descriptor{module = ?MODULE, data = {Port, _}}, Bytes) ->
@@ -648,25 +680,7 @@ set_cwd(Dir) ->
 set_cwd(Port, Dir) when is_port(Port) ->
     set_cwd_int(Port, Dir).
 
-set_cwd_int(Port, Dir0) ->
-    Dir = 
-	(catch
-	 case os:type() of
-	     vxworks -> 
-		 %% chdir on vxworks doesn't support
-		 %% relative paths
-		 %% must call get_cwd from here and use
-		 %% absname/2, since
-		 %% absname/1 uses file:get_cwd ...
-		 case get_cwd_int(Port, 0) of
-		     {ok, AbsPath} ->
-			 filename:absname(Dir0, AbsPath);
-		     _Badcwd ->
-			 Dir0
-		 end;
-	     _Else ->
-		 Dir0
-	 end),
+set_cwd_int(Port, Dir) ->
     %% Dir is now either a string or an EXIT tuple.
     %% An EXIT tuple will fail in the following catch.
     drv_command(Port, [?FILE_CHDIR, pathname(Dir)]).
